@@ -1,0 +1,37 @@
+# worker-template/wrangler.toml.example
+#
+# Copy to wrangler.toml and fill in your values:
+#   cp wrangler.toml.example wrangler.toml
+#   wrangler secret put BRIDGE_TOKEN
+#   wrangler d1 create <your-service>-onboarding-db
+#   # paste the database_id below
+#   wrangler deploy
+
+name = "onboard-automation-bridge-worker"
+main = "src/index.ts"
+compatibility_date = "2026-08-01"
+workers_dev = true
+
+# Authentication
+# Set BRIDGE_TOKEN as a secret: wrangler secret put BRIDGE_TOKEN
+# Set BRIDGE_NO_AUTH = "1" in [vars] to disable auth (dev only).
+[vars]
+BRIDGE_NO_AUTH = "1"
+# EMAIL_WORKER_URL = "https://mail-api.privatimail.com"
+# EMAIL_DOMAIN = "privatimail.com"
+
+# D1 database — services add their own tables via migrations
+[[d1_databases]]
+binding = "DB"
+database_name = "onboard-automation-bridge-db"
+database_id = "REPLACE_WITH_YOUR_D1_ID"
+migrations_dir = "migrations"
+
+# BridgeHub Durable Object — singleton, sqlite-backed
+[[durable_objects.bindings]]
+name = "BRIDGE_HUB"
+class_name = "BridgeHub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["BridgeHub"]

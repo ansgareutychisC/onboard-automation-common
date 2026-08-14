@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Onboard Automation Bridge</title>
+  <style>
+    :root {
+      --bg: #1a1a1a;
+      --fg: #e0e0e0;
+      --muted: #888;
+      --accent: #4a9eff;
+      --success: #4caf50;
+      --warn: #ff9800;
+      --error: #f44336;
+      --card: #2a2a2a;
+      --border: #3a3a3a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --bg: #ffffff;
+        --fg: #1a1a1a;
+        --muted: #666;
+        --accent: #1976d2;
+        --success: #2e7d32;
+        --warn: #ed6c02;
+        --error: #d32f2f;
+        --card: #f5f5f5;
+        --border: #e0e0e0;
+      }
+    }
+    body {
+      width: 460px;
+      min-height: 560px;
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--fg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+    }
+    .header {
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .header h1 { font-size: 14px; margin: 0; flex: 1; font-weight: 600; }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: var(--muted);
+      transition: background 0.2s;
+    }
+    .status-dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
+    .status-dot.connected { background: var(--success); }
+    .status-dot.connected-http { background: var(--warn); }
+    .status-dot.error { background: var(--error); }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
+    .status-text { color: var(--muted); font-size: 11px; }
+
+    section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+    section h2 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; letter-spacing: 0.5px; }
+    input[type="text"], input[type="password"] {
+      width: 100%; padding: 6px 8px; background: var(--card); color: var(--fg);
+      border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
+      box-sizing: border-box; font-family: monospace;
+    }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+    .row:last-child { margin-bottom: 0; }
+    button {
+      padding: 6px 12px; background: var(--accent); color: white; border: none;
+      border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;
+    }
+    button:hover { opacity: 0.9; }
+    button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
+    button.danger { background: var(--error); }
+    .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .stat { background: var(--card); padding: 8px; border-radius: 4px; text-align: center; }
+    .stat-value { font-size: 18px; font-weight: 600; }
+    .stat-value.failed { color: var(--error); }
+    .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+    .log-container {
+      background: #0d0d0d; color: #d4d4d4; padding: 8px; border-radius: 4px;
+      height: 180px; overflow-y: auto; font-family: "SF Mono", Menlo, monospace;
+      font-size: 10px; line-height: 1.4;
+    }
+    @media (prefers-color-scheme: light) {
+      .log-container { background: #1e1e1e; }
+    }
+    .log-entry { margin-bottom: 2px; word-break: break-all; }
+    .log-entry.warn { color: #ffa657; }
+    .log-entry.error { color: #ff7b72; }
+    .log-entry.debug { color: #888; }
+    .log-entry .ts { color: #666; margin-right: 4px; }
+    .log-entry .level { color: #79c0ff; margin-right: 4px; }
+    .log-entry .cmd-id { color: #d2a8ff; margin-left: 4px; font-size: 9px; }
+    .agent-id {
+      font-family: monospace; font-size: 10px; color: var(--muted);
+      padding: 4px 8px; background: var(--card); border-radius: 4px;
+      display: inline-block;
+    }
+    .quick-start { font-size: 11px; color: var(--muted); line-height: 1.5; }
+    .quick-start code { background: var(--card); padding: 1px 4px; border-radius: 2px; font-family: monospace; color: var(--fg); }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="status-dot" id="status-dot"></div>
+    <h1>Onboard Automation Bridge</h1>
+    <span class="status-text" id="status-text">disconnected</span>
+  </div>
+
+  <section>
+    <h2>Server Connection</h2>
+    <div class="row">
+      <input type="text" id="server-url" placeholder="wss://your-worker.workers.dev or http://localhost:8787" />
+    </div>
+    <div class="row">
+      <input type="password" id="auth-token" placeholder="Auth token (optional)" />
+    </div>
+    <div class="row">
+      <button id="connect-btn">Connect</button>
+      <button id="disconnect-btn" class="secondary">Disconnect</button>
+      <label class="checkbox-row">
+        <input type="checkbox" id="auto-connect" /> Auto-reconnect
+      </label>
+    </div>
+    <div class="row">
+      <span class="agent-id" id="agent-id">agent: …</span>
+    </div>
+  </section>
+
+  <section>
+    <h2>Activity</h2>
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value" id="stat-received">0</div>
+        <div class="stat-label">Received</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="stat-completed">0</div>
+        <div class="stat-label">Completed</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value failed" id="stat-failed">0</div>
+        <div class="stat-label">Failed</div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Diagnostics Log <button id="clear-log" class="secondary" style="float:right;padding:2px 8px;font-size:10px;">Clear</button></h2>
+    <div class="log-container" id="log-container"></div>
+  </section>
+
+  <section>
+    <h2>Quick Start</h2>
+    <div class="quick-start">
+      Point the extension at any worker.dev URL running the bridge protocol.
+      See <code>docs/PROTOCOL.md</code> for the wire format and
+      <code>docs/DEBUGGING.md</code> for the activatable debug commands.
+    </div>
+  </section>
+
+  <script src="popup.js"></script>
+</body>
+</html>

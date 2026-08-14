@@ -1,0 +1,2 @@
+aiohttp>=3.10,<4
+# No other runtime deps. The extension_bridge.py uses only aiohttp + stdlib.

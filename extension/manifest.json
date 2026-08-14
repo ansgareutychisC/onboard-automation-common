@@ -1,0 +1,46 @@
+{
+  "manifest_version": 3,
+  "name": "Onboard Automation Bridge",
+  "version": "1.0.0",
+  "description": "Service-agnostic browser automation proxy. Executes commands from any backend worker over a resilient WebSocket + HTTP-fallback protocol. Built-in activatable debugging (HAR capture, console mirror, network/trace recording, DOM snapshot).",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "debugger",
+    "cookies",
+    "alarms",
+    "idle"
+  ],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Onboard Automation Bridge",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'; connect-src wss: https: http: ws:"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["sandbox.html", "sandbox.js"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
