@@ -53,58 +53,57 @@ function getHub(c: any): DurableObjectStub {
   return c.env.BRIDGE_HUB.get(id);
 }
 
+// ISSUE-R3-1 fix: helper to forward the caller's Authorization header as
+// x-bridge-token on ALL proxied DO requests. Without this, the DO's auth
+// check (bridge-hub.ts:58-63) rejects /api/poll, /api/result, /api/send-http,
+// and /api/result/:id with 401 — breaking the entire HTTP SOS fallback path
+// when BRIDGE_TOKEN is set in production.
+function forwardWithToken(c: any, method: string, url: string, body?: unknown): Request {
+  const token = c.req.header("authorization")?.startsWith("Bearer ")
+    ? c.req.header("authorization")!.slice(7) : "";
+  const headers: Record<string, string> = { "x-bridge-token": token };
+  if (body !== undefined) headers["content-type"] = "application/json";
+  return new Request(url, {
+    method,
+    headers,
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+}
+
 app.get("/api/extensions", async (c) => {
   const hub = getHub(c);
-  const res = await hub.fetch("https://do/status");
-  return res;
+  return hub.fetch(forwardWithToken(c, "GET", "https://do/status"));
 });
 
 app.post("/api/command", async (c) => {
   const hub = getHub(c);
   const body = await c.req.json();
-  // Forward Authorization header to DO as x-bridge-token (so DO can auth the extension's WS)
-  const doReq = new Request("https://do/command", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-bridge-token": c.req.header("authorization")?.startsWith("Bearer ") ? c.req.header("authorization")!.slice(7) : "",
-    },
-    body: JSON.stringify(body),
-  });
-  return hub.fetch(doReq);
+  return hub.fetch(forwardWithToken(c, "POST", "https://do/command", body));
 });
 
 app.get("/api/poll", async (c) => {
   const hub = getHub(c);
   const agentId = c.req.query("agentId") || "";
   const wait = c.req.query("wait") || "25";
-  return hub.fetch(`https://do/poll?agentId=${encodeURIComponent(agentId)}&wait=${wait}`);
+  return hub.fetch(forwardWithToken(c, "GET", `https://do/poll?agentId=${encodeURIComponent(agentId)}&wait=${wait}`));
 });
 
 app.post("/api/result", async (c) => {
   const hub = getHub(c);
   const body = await c.req.json();
-  return hub.fetch(new Request("https://do/result", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }));
+  return hub.fetch(forwardWithToken(c, "POST", "https://do/result", body));
 });
 
 app.post("/api/send-http", async (c) => {
   const hub = getHub(c);
   const body = await c.req.json();
-  return hub.fetch(new Request("https://do/send-http", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-  }));
+  return hub.fetch(forwardWithToken(c, "POST", "https://do/send-http", body));
 });
 
 app.get("/api/result/:id", async (c) => {
   const hub = getHub(c);
   const id = c.req.param("id");
-  return hub.fetch(`https://do/result/${id}`);
+  return hub.fetch(forwardWithToken(c, "GET", `https://do/result/${id}`));
 });
 
 // WebSocket upgrade — for the extension AND for dashboard subscribers

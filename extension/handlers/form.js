@@ -8,6 +8,7 @@
 import { CMD } from "../lib/protocol.js";
 import { sendResult, sendError } from "../lib/send.js";
 import { warn } from "../lib/logger.js";
+import { _ownedTabs } from "./debug.js";
 
 export async function handleFormFill(msg, ctx) {
   const { tabId, selector, value } = msg;
@@ -105,15 +106,28 @@ export async function handleFormEval(msg, ctx) {
     // userGesture:true (sotrusted-triggered click/submit work), then detach.
     const debugTarget = { tabId };
     let attached = false;
+    // ISSUE-R3-2 fix: weAttached is ONLY set when chrome.debugger.attach
+    // succeeds. If we assumed ownership of an existing debugger (from an
+    // active debug.* session), weAttached stays false — we must NOT detach
+    // in the finally block, or we'll break the debug session.
+    let weAttached = false;
     try {
       await chrome.debugger.attach(debugTarget, "1.3");
+      _ownedTabs.add(tabId);  // ISSUE-R2-8: mark as ours
       attached = true;
+      weAttached = true;  // ISSUE-R3-2: we own this debugger
     } catch (err) {
-      // Tolerate "Another debugger already attached" — assume it's ours from a prior call
-      if (!String(err?.message).includes("Another debugger")) {
+      // ISSUE-R2-8: distinguish "ours" (orphan from prior SW) from "foreign" (DevTools)
+      if (String(err?.message).includes("Another debugger") && _ownedTabs.has(tabId)) {
+        warn("form-eval-debugger-already-attached-ours", { tabId });
+        attached = true;  // assume ours — orphan from prior SW lifetime OR active debug.* session
+        // weAttached stays false — we must NOT detach (would break the session)
+      } else if (String(err?.message).includes("Another debugger")) {
+        sendError(msg.id, `form.eval failed: tab ${tabId} has a foreign debugger attached (DevTools or another extension). Close DevTools and retry.`, {}, ctx);
+        return;
+      } else {
         throw err;
       }
-      warn("form-eval-debugger-already-attached", { tabId });
     }
 
     try {
@@ -130,8 +144,12 @@ export async function handleFormEval(msg, ctx) {
         sendResult(msg.id, { result: evalRes.result?.value }, ctx);
       }
     } finally {
-      if (attached) {
+      // ISSUE-R3-2 fix: only detach if WE attached (weAttached=true). If we
+      // assumed ownership of an existing debugger (from an active debug.*
+      // session), detaching would break that session.
+      if (weAttached) {
         try { await chrome.debugger.detach(debugTarget); } catch {}
+        _ownedTabs.delete(tabId);
       }
     }
   } catch (err) {

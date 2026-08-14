@@ -105,7 +105,8 @@ class ExtensionBridge:
 
     async def wait_for_extension(self, timeout: float = 300.0, poll_interval: float = 1.0) -> None:
         """Block until an extension connects, or raise BridgeTimeoutError."""
-        loop = asyncio.get_event_loop()
+        # ISSUE-R2-6 fix: use get_running_loop (not deprecated get_event_loop)
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while loop.time() < deadline:
             if await self.is_extension_connected():
@@ -139,11 +140,26 @@ class ExtensionBridge:
             ) as resp:
                 if resp.status == 503:
                     raise BridgeNotConnectedError("no extension connected via WS")
+                # ISSUE-R3-4 fix: 504 = timeout → BridgeTimeoutError (was BridgeProtocolError)
+                if resp.status == 504:
+                    text = await resp.text()
+                    raise BridgeTimeoutError(f"command timed out: {text[:200]}")
+                # ISSUE-5 + ISSUE-R3-5 fix: 500 may carry "No extension connected"
+                # OR "Extension disconnected" (mid-command disconnect). Both should
+                # trigger the HTTP-queue fallback via BridgeNotConnectedError.
+                if resp.status == 500:
+                    text = await resp.text()
+                    lower = text.lower()
+                    if "no extension connected" in lower or "extension disconnected" in lower:
+                        raise BridgeNotConnectedError(f"server reported: {text[:200]}")
+                    if "timed out" in lower or "timeout" in lower:
+                        raise BridgeTimeoutError(f"command timed out: {text[:200]}")
+                    raise BridgeProtocolError(f"bridge returned HTTP 500: {text[:200]}")
                 if resp.status == 401:
                     raise BridgeAuthError("bridge rejected auth token")
                 if resp.status != 200:
                     text = await resp.text()
-                    raise BridgeProtocolError(f"bridge returned HTTP {resp.status}: {text}")
+                    raise BridgeProtocolError(f"bridge returned HTTP {resp.status}: {text[:200]}")
                 data = await resp.json()
                 return CommandResult.from_dict(data)
         except asyncio.TimeoutError:
@@ -171,7 +187,8 @@ class ExtensionBridge:
             raise BridgeConnectionError(f"failed to enqueue command: {e}") from e
 
         # Poll for result
-        loop = asyncio.get_event_loop()
+        # ISSUE-R2-6 fix: use get_running_loop (not deprecated get_event_loop)
+        loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout_s + 30  # grace
         while loop.time() < deadline:
             try:

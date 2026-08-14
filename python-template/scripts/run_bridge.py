@@ -20,6 +20,12 @@ Usage:
 
     # As a daemon (double-forked, survives shell exits):
     python scripts/run_bridge.py --daemon --pid-file /tmp/bridge.pid --log-file /tmp/bridge.log
+
+Security:
+    All /api/* routes and the /ws handler require `Authorization: Bearer <token>`
+    matching --auth-token (if set). If --auth-token is empty (default for
+    local dev), auth is disabled with a warning. NEVER run with empty
+    --auth-token on a public-facing host.
 """
 
 from __future__ import annotations
@@ -40,6 +46,15 @@ from aiohttp import web, WSMsgType
 logger = logging.getLogger("bridge_daemon")
 
 # ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MAX_QUEUE = 1000  # ISSUE-7 fix: cap the HTTP command queue (DoS protection)
+MAX_HTTP_RESULTS = 1000  # cap the http_results map (DoS protection)
+HTTP_RESULT_TTL_S = 300  # 5 min — results older than this are evicted
+SWEEP_INTERVAL_S = 60  # sweeper runs every 60s
+
+# ---------------------------------------------------------------------------
 # State — single-extension for local dev (round-robin is overkill here)
 # ---------------------------------------------------------------------------
 
@@ -48,7 +63,9 @@ class BridgeState:
         self.auth_token = auth_token
         self.ws_conn: Optional[web.WebSocketResponse] = None  # background SW
         self.sandbox_conn: Optional[web.WebSocketResponse] = None  # sandbox page
-        self.pending: dict[str, asyncio.Future] = {}
+        # ISSUE-6 fix: track which ws connection each pending command was sent to,
+        # so on disconnect we only fail futures for THAT connection (not all).
+        self.pending: dict[str, tuple[asyncio.Future, Optional[web.WebSocketResponse]]] = {}
         self.http_command_queue: list[dict] = []
         self.http_results: dict[str, dict] = {}
         self.commands_received = 0
@@ -64,6 +81,31 @@ class BridgeState:
 
 
 STATE: Optional[BridgeState] = None
+
+
+# ---------------------------------------------------------------------------
+# Auth middleware — ISSUE-2 fix
+# ---------------------------------------------------------------------------
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    """Require Authorization: Bearer <token> on /api/* routes (skip if no token set)."""
+    if not STATE.auth_token:
+        # No token configured — auth disabled (local dev only). Log once on first request.
+        if not getattr(auth_middleware, "_warned", False):
+            logger.warning("AUTH DISABLED — --auth-token not set. Do not run on a public host.")
+            auth_middleware._warned = True  # type: ignore
+        return await handler(request)
+    # /health and / are public (liveness + status page)
+    if request.path in ("/health", "/", "/ws", ""):
+        return await handler(request)
+    # /api/* requires Bearer token
+    if request.path.startswith("/api/"):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:] if auth.startswith("Bearer ") else ""
+        if token != STATE.auth_token:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+    return await handler(request)
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +131,7 @@ async def get_extensions(request: web.Request) -> web.Response:
     if STATE.ws_conn and not STATE.ws_conn.closed:
         exts.append({"context": "worker", "readyState": 1, "agentId": getattr(STATE.ws_conn, "_agent_id", "")})
     if STATE.sandbox_conn and not STATE.sandbox_conn.closed:
-        exts.append({"context": "page", "readyState": 1, "agentId": "sandbox-page"})
+        exts.append({"context": "page", "readyState": 1, "agentId": getattr(STATE.sandbox_conn, "_agent_id", "")})
     return web.json_response({"extensions": exts, "pendingCount": len(STATE.pending), "queuedCommands": len(STATE.http_command_queue)})
 
 
@@ -105,38 +147,60 @@ async def send_command(request: web.Request) -> web.Response:
     if not target_ws or target_ws.closed:
         return web.json_response({"ok": False, "id": cmd_id, "error": "No extension connected (context=" + ("page" if cmd.get("type") == "sandbox.fetch" else "worker") + ")"}, status=503)
 
-    future: asyncio.Future = asyncio.get_event_loop().create_future()
-    STATE.pending[cmd_id] = future
+    # ISSUE-30 fix: use get_running_loop (not deprecated get_event_loop)
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    # ISSUE-6 fix: store the target_ws with the future so disconnect can fail only the right ones
+    STATE.pending[cmd_id] = (future, target_ws)
     STATE.commands_received += 1
 
     try:
         await target_ws.send_json(cmd)
     except Exception as e:
         STATE.pending.pop(cmd_id, None)
-        return web.json_response({"ok": False, "id": cmd_id, "error": f"Failed to send: {e}"}, status=502)
+        # ISSUE-R4-1 fix: ws.send_json() throws when the WS transitioned OPEN→CLOSING
+        # between the check and now. The command was NEVER sent. Treat as
+        # "Extension disconnected" (503) so the Python client falls back to the
+        # HTTP queue — safe because the command was never delivered (no
+        # duplicate-execution risk).
+        return web.json_response({"ok": False, "id": cmd_id, "error": f"Extension disconnected (failed to send: {e})"}, status=503)
 
-    # Set up timeout
+    # Set up timeout. ISSUE-30 fix: store the task so it isn't GC'd.
+    timeout_task: Optional[asyncio.Task] = None
+
     async def _timeout():
         await asyncio.sleep(timeout + 5)
         if cmd_id in STATE.pending:
             STATE.pending.pop(cmd_id)
-            future.set_exception(asyncio.TimeoutError(f"Command {cmd.get('type')} ({cmd_id}) timed out after {timeout}s"))
+            if not future.done():
+                future.set_exception(asyncio.TimeoutError(f"Command {cmd.get('type')} ({cmd_id}) timed out after {timeout}s"))
 
-    asyncio.create_task(_timeout())
+    timeout_task = asyncio.create_task(_timeout())
 
     try:
+        # ISSUE-R2-11 fix: the future always RESOLVES with the result dict (even
+        # when ok:false). The HTTP handler returns 200 with {ok:false, error:...}
+        # so the Python client gets a typed BridgeCommandError via raise_for_error().
         result = await future
-        return web.json_response({"ok": True, "id": cmd_id, **result})
+        return web.json_response({"ok": result.get("ok", False), "id": cmd_id, **{k: v for k, v in result.items() if k not in ("ok", "id", "_received_at")}})
     except asyncio.TimeoutError as e:
+        # ISSUE-R3-4 fix: 504 for timeouts (Python client raises BridgeTimeoutError)
         return web.json_response({"ok": False, "id": cmd_id, "error": str(e)}, status=504)
+    except ConnectionError as e:
+        # ISSUE-R3-5 fix: 503 for mid-command disconnect (Python client falls back to HTTP)
+        return web.json_response({"ok": False, "id": cmd_id, "error": str(e)}, status=503)
     except Exception as e:
         return web.json_response({"ok": False, "id": cmd_id, "error": str(e)}, status=500)
+    finally:
+        if timeout_task and not timeout_task.done():
+            timeout_task.cancel()
 
 
 async def poll_for_commands(request: web.Request) -> web.Response:
     """Extension polls for queued commands (SOS HTTP mode)."""
     agent_id = request.query.get("agentId", "")
-    wait_s = int(request.query.get("wait", "25"))
+    # ISSUE-24 fix (daemon side): cap wait_s at 60s
+    wait_s = min(int(request.query.get("wait", "25")), 60)
     deadline = time.time() + wait_s
     while time.time() < deadline:
         if STATE.http_command_queue:
@@ -153,14 +217,24 @@ async def post_result(request: web.Request) -> web.Response:
     if not cmd_id:
         return web.json_response({"ok": False, "error": "missing id"}, status=400)
 
+    # ISSUE-9 fix (daemon side): stamp received-at time so the sweeper can evict
+    body["_received_at"] = time.time()
     STATE.http_results[cmd_id] = body
-    fut = STATE.pending.pop(cmd_id, None)
-    if fut and not fut.done():
-        if body.get("ok"):
+    # Cap the results map (DoS protection)
+    if len(STATE.http_results) > MAX_HTTP_RESULTS:
+        # Evict oldest by _received_at
+        oldest = min(STATE.http_results.items(), key=lambda kv: kv[1].get("_received_at", 0))
+        STATE.http_results.pop(oldest[0], None)
+
+    fut_entry = STATE.pending.pop(cmd_id, None)
+    if fut_entry:
+        fut, _ws = fut_entry
+        if not fut.done():
+            # ISSUE-R2-11 fix: always RESOLVE (not raise) with the full body, even
+            # when ok:false. The send_command HTTP handler returns 200 with the
+            # {ok:false} body so the Python client gets a typed BridgeCommandError.
             fut.set_result(body)
-        else:
-            fut.set_exception(Exception(body.get("error", "Command failed")))
-        STATE.commands_completed += 1
+            STATE.commands_completed += 1
     return web.json_response({"ok": True})
 
 
@@ -170,6 +244,9 @@ async def send_http(request: web.Request) -> web.Response:
     cmd = body.get("cmd", {})
     cmd_id = cmd.get("id") or ("cmd_" + uuid.uuid4().hex[:12])
     cmd["id"] = cmd_id
+    # ISSUE-7 fix: cap the queue. If full, return 503 (don't silently drop oldest).
+    if len(STATE.http_command_queue) >= MAX_QUEUE:
+        return web.json_response({"ok": False, "error": f"HTTP command queue full ({MAX_QUEUE})"}, status=503)
     STATE.http_command_queue.append({"id": cmd_id, "cmd": cmd, "queued_at": time.time()})
     return web.json_response({"id": cmd_id})
 
@@ -197,11 +274,20 @@ async def status_page(request: web.Request) -> web.StreamResponse:
 # ---------------------------------------------------------------------------
 
 async def ws_handler(request: web.Request) -> web.WebSocketResponse:
+    # ISSUE-R2-1 fix: do NOT check auth at the WS upgrade. The browser's
+    # WebSocket() API cannot send custom headers (Authorization), and the
+    # extension's _buildWsUrl doesn't append ?token=. Auth happens via the
+    # in-band AUTH message below (the same mechanism the DO uses).
+    # The HTTP auth middleware (auth_middleware) covers the /api/* routes;
+    # the WS path relies on the authenticated flag gated by the AUTH message.
     ws = web.WebSocketResponse(max_msg_size=50 * 1024 * 1024, heartbeat=15.0, autoping=True)
     await ws.prepare(request)
 
     conn_context = "worker"  # updated on connect message
     conn_agent_id = ""
+    # ISSUE-1 fix: track authenticated state. If auth_token is set, the client
+    # MUST send an `auth` message before `connect`/`result`/`event` are accepted.
+    authenticated = not STATE.auth_token  # no token = always authenticated (local dev)
 
     async for msg in ws:
         if msg.type == WSMsgType.TEXT:
@@ -211,11 +297,17 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
                 continue
             msg_type = data.get("type")
 
-            if msg_type == "auth":
-                if STATE.auth_token and data.get("token") != STATE.auth_token:
-                    await ws.close(code=1008, message=b"Invalid token")
-                    return ws
-                await ws.send_json({"type": "auth-ok"})
+            # ISSUE-1 fix: pre-auth gate. Only `auth` is processed before authenticated.
+            if not authenticated:
+                if msg_type == "auth":
+                    if data.get("token") == STATE.auth_token:
+                        authenticated = True
+                        await ws.send_json({"type": "auth-ok"})
+                    else:
+                        await ws.close(code=1008, message=b"Invalid token")
+                        return ws
+                    continue
+                # Drop all other messages until authenticated
                 continue
 
             if msg_type == "connect":
@@ -232,14 +324,18 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
             if msg_type == "result":
                 cmd_id = data.get("id")
                 if cmd_id:
+                    data["_received_at"] = time.time()
                     STATE.http_results[cmd_id] = data
-                    fut = STATE.pending.pop(cmd_id, None)
-                    if fut and not fut.done():
-                        if data.get("ok"):
+                    fut_entry = STATE.pending.pop(cmd_id, None)
+                    if fut_entry:
+                        fut, _ws = fut_entry
+                        if not fut.done():
+                            # ISSUE-R2-11 fix: always RESOLVE with the full body,
+                            # even when ok:false. The send_command handler returns
+                            # 200 with {ok:false} so the Python client gets a
+                            # typed BridgeCommandError via raise_for_error().
                             fut.set_result(data)
-                        else:
-                            fut.set_exception(Exception(data.get("error", "Command failed")))
-                        STATE.commands_completed += 1
+                            STATE.commands_completed += 1
                 continue
 
             if msg_type == "log":
@@ -263,12 +359,31 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
         STATE.sandbox_conn = None
     elif STATE.ws_conn is ws:
         STATE.ws_conn = None
-    # Fail any pending commands for this connection
-    for cmd_id, fut in list(STATE.pending.items()):
-        if not fut.done():
+    # ISSUE-6 fix: only fail pending commands that were sent to THIS ws connection.
+    # Previously the code failed ALL pending commands on any disconnect.
+    for cmd_id, (fut, target_ws) in list(STATE.pending.items()):
+        if target_ws is ws and not fut.done():
             fut.set_exception(ConnectionError("Extension disconnected"))
+            STATE.pending.pop(cmd_id, None)
     logger.info("extension disconnected: agentId=%s context=%s", conn_agent_id, conn_context)
     return ws
+
+
+# ---------------------------------------------------------------------------
+# Sweeper — drop stale queued commands + http_results
+# ---------------------------------------------------------------------------
+
+async def _sweeper():
+    """Background task that drops stale entries from http_command_queue and http_results."""
+    while True:
+        await asyncio.sleep(SWEEP_INTERVAL_S)
+        now = time.time()
+        # Drop queued commands older than 5 min
+        STATE.http_command_queue[:] = [c for c in STATE.http_command_queue if now - c.get("queued_at", 0) < HTTP_RESULT_TTL_S]
+        # Drop stale http_results
+        stale_ids = [cid for cid, r in STATE.http_results.items() if now - r.get("_received_at", 0) > HTTP_RESULT_TTL_S]
+        for cid in stale_ids:
+            STATE.http_results.pop(cid, None)
 
 
 # ---------------------------------------------------------------------------
@@ -276,7 +391,7 @@ async def ws_handler(request: web.Request) -> web.WebSocketResponse:
 def build_app(auth_token: str = "") -> web.Application:
     global STATE
     STATE = BridgeState(auth_token=auth_token)
-    app = web.Application()
+    app = web.Application(middlewares=[auth_middleware])
     app.router.add_get("/", status_page)
     app.router.add_get("/health", health)
     app.router.add_get("/api/extensions", get_extensions)
@@ -286,8 +401,18 @@ def build_app(auth_token: str = "") -> web.Application:
     app.router.add_post("/api/send-http", send_http)
     app.router.add_get("/api/result/{id}", get_result_by_id)
     app.router.add_get("/ws", ws_handler)
-    # Also accept WS at "/" for Caddy XTransformPort compatibility
+    # Also accept WS at "" (root path) for Caddy XTransformPort compatibility
     app.router.add_get("", ws_handler)
+
+    # Start the sweeper as a cleanup-context task
+    async def _start_sweeper(app):
+        task = asyncio.create_task(_sweeper())
+        yield
+        task.cancel()
+        try: await task
+        except asyncio.CancelledError: pass
+
+    app.cleanup_ctx.append(_start_sweeper)
     return app
 
 
@@ -295,7 +420,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="127.0.0.1", help="bind host (use 0.0.0.0 for external)")
     parser.add_argument("--port", type=int, default=8787)
-    parser.add_argument("--auth-token", default="")
+    parser.add_argument("--auth-token", default="", help="Bearer token for /api/* + /ws auth. REQUIRED if binding to 0.0.0.0.")
     parser.add_argument("--daemon", action="store_true", help="double-fork into background")
     parser.add_argument("--pid-file", default="/tmp/bridge_daemon.pid")
     parser.add_argument("--log-file", default="/tmp/bridge_daemon.log")
@@ -303,6 +428,11 @@ def main():
     args = parser.parse_args()
 
     logging.basicConfig(level=args.log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    # Safety check: refuse to bind externally without auth
+    if args.host not in ("127.0.0.1", "localhost", "::1") and not args.auth_token:
+        logger.error("REFUSING TO START: --host %s without --auth-token is insecure. Use --auth-token <secret> or bind to 127.0.0.1.", args.host)
+        sys.exit(1)
 
     if args.daemon:
         # Inline double-fork (avoid importing daemonize.py which may not be on path)
@@ -322,9 +452,6 @@ def main():
     app = build_app(auth_token=args.auth_token)
 
     # Graceful shutdown
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
     async def _shutdown(app):
         if STATE.ws_conn and not STATE.ws_conn.closed:
             await STATE.ws_conn.close()
@@ -333,8 +460,8 @@ def main():
 
     app.on_shutdown.append(_shutdown)
 
-    logger.info("starting bridge daemon on %s:%s", args.host, args.port)
-    web.run_app(app, host=args.host, port=args.port, loop=loop, print=None)
+    logger.info("starting bridge daemon on %s:%s (auth=%s)", args.host, args.port, "enabled" if args.auth_token else "DISABLED")
+    web.run_app(app, host=args.host, port=args.port, print=None)
 
 
 if __name__ == "__main__":

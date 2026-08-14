@@ -13,6 +13,7 @@
 // handler). If absent, falls back to chrome.storage.local["serverUrl"].
 
 import { MSG, PROTOCOL_VERSION, CONTEXT, buildCapabilities } from "./lib/protocol.js";
+import { buildWsUrl } from "./lib/url.js";
 
 const KEEPALIVE_INTERVAL_MS = 25_000;
 const RECONNECT_DELAY_MS = 5_000;
@@ -22,7 +23,10 @@ const logEntries = [];
 let ws = null;
 let reconnectTimer = null;
 let keepaliveTimer = null;
-let agentId = "sandbox-page";
+// ISSUE-14 fix: previously hardcoded to "sandbox-page". Now unique per
+// instance (crypto.randomUUID) so multiple browser profiles connecting to
+// the same bridge don't share an agentId in logs/status.
+let agentId = "sandbox-" + crypto.randomUUID();
 
 function log(level, message, data = {}) {
   const entry = { ts: Date.now(), level, message, data, agentId };
@@ -35,13 +39,13 @@ function log(level, message, data = {}) {
   }
 }
 
-function getServerUrl() {
-  // 1. ?server= query param (set by sandbox.open handler)
+async function getServerUrl() {
+  // ISSUE-13 fix: prefer ?server= query param (set by sandbox.open handler).
+  // Fall back to chrome.storage.local["serverUrl"] (same as background SW).
   const params = new URLSearchParams(location.search);
   const fromParam = params.get("server");
   if (fromParam) return fromParam;
 
-  // 2. Fall back to chrome.storage.local["serverUrl"] (same as background SW)
   return new Promise((resolve) => {
     chrome.storage.local.get("serverUrl", (cfg) => {
       resolve(cfg.serverUrl || "");
@@ -49,23 +53,27 @@ function getServerUrl() {
   });
 }
 
-function buildWsUrl(serverUrl) {
-  let url = serverUrl.trim()
-    .replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-  if (!/^wss?:\/\//i.test(url)) url = "ws://" + url;
-  try {
-    const parsed = new URL(url);
-    const isLocal = ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(parsed.hostname);
-    if (!isLocal && !parsed.searchParams.has("XTransformPort")) {
-      parsed.searchParams.set("XTransformPort", "8787");
-    }
-    parsed.pathname = "/";
-    return parsed.toString();
-  } catch { return url; }
+// ISSUE-14 fix: read auth token from ?token= query param (set by sandbox.open)
+// or from chrome.storage.local. Previously hardcoded to "" — failed against
+// an authenticated bridge.
+async function getAuthToken() {
+  const params = new URLSearchParams(location.search);
+  const fromParam = params.get("token");
+  if (fromParam) return fromParam;
+  return new Promise((resolve) => {
+    chrome.storage.local.get("authToken", (cfg) => {
+      resolve(cfg.authToken || "");
+    });
+  });
 }
+
+// ISSUE-R2-4 fix: use the shared buildWsUrl from lib/url.js (was duplicated
+// here with the buggy unconditional XTransformPort logic). Now consistent
+// with connection.js — only appends XTransformPort for .space-z.ai hosts.
 
 async function connect() {
   const serverUrl = await getServerUrl();
+  const authToken = await getAuthToken();
   if (!serverUrl) {
     log("error", "no-server-url", { hint: "Open via sandbox.open command or set serverUrl in popup" });
     return;
@@ -88,7 +96,8 @@ async function connect() {
     log("info", "ws-open", {});
     // Identify as sandbox page — context:"page" tells the server to route
     // sandbox.fetch commands here, NOT to the background SW.
-    ws.send(JSON.stringify({ type: MSG.AUTH, token: "" }));
+    // ISSUE-14 fix: send the actual auth token (was hardcoded "").
+    ws.send(JSON.stringify({ type: MSG.AUTH, token: authToken || "" }));
     ws.send(JSON.stringify({
       type: MSG.CONNECT,
       agentId,

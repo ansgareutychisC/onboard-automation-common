@@ -25,11 +25,13 @@ try {
   if (stored[AGENT_ID_KEY]) {
     agentId = stored[AGENT_ID_KEY];
   } else {
-    agentId = "ext-" + Math.random().toString(36).slice(2, 8) + Math.random().toString(36).slice(2, 4);
+    // crypto.randomUUID() is available in MV3 service workers and is
+    // cryptographically secure (unlike Math.random). ISSUE-12 fix.
+    agentId = "ext-" + crypto.randomUUID();
     await chrome.storage.local.set({ [AGENT_ID_KEY]: agentId });
   }
 } catch (err) {
-  agentId = "ext-fallback" + Math.random().toString(36).slice(2, 8);
+  agentId = "ext-" + crypto.randomUUID();
 }
 
 // ---------------------------------------------------------------------------

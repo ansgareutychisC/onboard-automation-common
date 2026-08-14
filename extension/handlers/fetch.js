@@ -9,6 +9,18 @@
 // page.fetch — page main-world context. Uses chrome.scripting.executeScript
 //              with world:'MAIN'. Chrome's page-context network stack handles
 //              zstd natively. REQUIRES a tab to already be open.
+//
+// SECURITY NOTE (ISSUE-R2-10): page.fetch executes `fetch()` in the tab's
+// main world with `credentials: "include"` by default. This means a
+// compromised bridge (or an attacker who can reach the daemon) can use ANY
+// open tab to fetch ANY URL with the user's cookies for ANY domain —
+// including cross-origin requests that would be blocked by CORS from a
+// normal page script (the extension's scripting permission bypasses CORS).
+//
+// Mitigation: require auth on the bridge (BRIDGE_TOKEN / --auth-token),
+// restrict network access to the bridge host, and avoid running untrusted
+// orchestrators. The extension itself is a "dumb proxy" by design — it
+// executes whatever commands the authenticated bridge sends.
 
 import { CMD } from "../lib/protocol.js";
 import { sendResult, sendError } from "../lib/send.js";
@@ -72,6 +84,9 @@ export async function handlePageFetch(msg, ctx) {
   try {
     // Inject a function into the tab's main world. Chrome's page-context
     // network stack handles zstd natively (no DecompressionStream dance).
+    // ISSUE-8 fix: pass timeoutMs into the injected function so the page's
+    // fetch() is cancelled via AbortController — not just the outer
+    // executeScript wrapper.
     const [result] = await chrome.scripting.executeScript({
       target: { tabId },
       world: "MAIN",
@@ -79,16 +94,25 @@ export async function handlePageFetch(msg, ctx) {
         try {
           const opts = { method: p.method, headers: p.headers, credentials: p.credentials };
           if (p.body && !["GET", "HEAD"].includes(p.method.toUpperCase())) opts.body = p.body;
-          const res = await fetch(p.url, opts);
-          const text = await res.text();
-          const hdrs = {};
-          res.headers.forEach((v, k) => { hdrs[k] = v; });
-          return { ok: true, status: res.status, statusText: res.statusText, body: text, headers: hdrs, finalUrl: res.url, contentEncoding: hdrs["content-encoding"] || "" };
+          // AbortController so a hanging page-context fetch is cancelled
+          // at timeoutMs, not left running indefinitely.
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), p.timeoutMs);
+          opts.signal = controller.signal;
+          try {
+            const res = await fetch(p.url, opts);
+            const text = await res.text();
+            const hdrs = {};
+            res.headers.forEach((v, k) => { hdrs[k] = v; });
+            return { ok: true, status: res.status, statusText: res.statusText, body: text, headers: hdrs, finalUrl: res.url, contentEncoding: hdrs["content-encoding"] || "" };
+          } finally {
+            clearTimeout(timer);
+          }
         } catch (err) {
           return { ok: false, error: String(err) };
         }
       },
-      args: [{ url, method, headers, body, credentials }],
+      args: [{ url, method, headers, body, credentials, timeoutMs }],
     });
 
     if (!result || !result.result) {

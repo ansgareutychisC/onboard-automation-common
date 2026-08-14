@@ -11,6 +11,7 @@
 import { CMD } from "../lib/protocol.js";
 import { sendResult, sendError } from "../lib/send.js";
 import { info, warn } from "../lib/logger.js";
+import { _ownedTabs } from "./debug.js";
 
 export async function handleXhrIntercept(msg, ctx) {
   const { tabId, urlPattern, method = null, timeoutMs = 30_000 } = msg;
@@ -29,14 +30,25 @@ export async function handleXhrIntercept(msg, ctx) {
   const debugTarget = { tabId };
   const startedAt = Date.now();
   let attached = false;
+  // ISSUE-R3-3 fix: weAttached is ONLY set when chrome.debugger.attach succeeds.
+  // If we assumed ownership of an existing debugger (from an active debug.*
+  // session), weAttached stays false — we must NOT disable Network or detach
+  // in cleanup, or we'll break the debug session.
+  let weAttached = false;
   let resolved = false;
   let pendingRequestId = null;  // first matching request
 
   const cleanup = async () => {
-    if (attached) {
+    // ISSUE-R3-3 fix: only clean up if WE attached (weAttached=true). If we
+    // assumed ownership of an existing debugger, calling Network.disable would
+    // stop all Network events for active debug.* sessions, and detach would
+    // break them entirely.
+    if (weAttached) {
       try { await chrome.debugger.sendCommand(debugTarget, "Network.disable"); } catch {}
       try { await chrome.debugger.detach(debugTarget); } catch {}
+      _ownedTabs.delete(tabId);
       attached = false;
+      weAttached = false;
     }
   };
 
@@ -51,11 +63,24 @@ export async function handleXhrIntercept(msg, ctx) {
   try {
     try {
       await chrome.debugger.attach(debugTarget, "1.3");
+      _ownedTabs.add(tabId);  // ISSUE-R2-8: mark as ours
       attached = true;
+      weAttached = true;  // ISSUE-R3-3: we own this debugger
     } catch (err) {
-      if (!String(err?.message).includes("Another debugger")) throw err;
-      warn("xhr-debugger-already-attached", { tabId });
-      attached = true;  // assume ours
+      // ISSUE-R2-8: distinguish "ours" (orphan from prior SW) from "foreign" (DevTools)
+      if (String(err?.message).includes("Another debugger") && _ownedTabs.has(tabId)) {
+        warn("xhr-debugger-already-attached-ours", { tabId });
+        attached = true;  // assume ours — orphan from prior SW lifetime OR active debug.* session
+        // weAttached stays false — we must NOT detach or disable Network
+      } else if (String(err?.message).includes("Another debugger")) {
+        // Foreign debugger — give a clear error instead of assuming ownership
+        resolved = true;
+        clearTimeout(timer);
+        sendError(msg.id, `xhr.intercept failed: tab ${tabId} has a foreign debugger attached (DevTools or another extension). Close DevTools and retry.`, {}, { ...ctx, durationMs: Date.now() - startedAt });
+        return;
+      } else {
+        throw err;
+      }
     }
 
     await chrome.debugger.sendCommand(debugTarget, "Network.enable");

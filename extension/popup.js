@@ -100,16 +100,50 @@ function appendLogEntry(entry, skipScroll = false) {
   const div = document.createElement("div");
   div.className = "log-entry " + (entry.level || "info");
 
-  const ts = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
-  const cmdInfo = entry.commandId ? `<span class="cmd-id">[${entry.commandId.slice(0, 8)}]</span>` : "";
-  const tabInfo = entry.tabId != null ? ` <span style="color:#666">tab=${entry.tabId}</span>` : "";
-  const durInfo = entry.durationMs != null ? ` <span style="color:#666">${entry.durationMs}ms</span>` : "";
+  // ISSUE-21 fix: previously built innerHTML with template literals that
+  // interpolated entry.commandId, entry.tabId, entry.durationMs WITHOUT
+  // escaping. A malicious bridge could inject HTML via a crafted commandId.
+  // Now we use DOM APIs (textContent / createElement) — no innerHTML, no
+  // possibility of XSS.
 
-  const dataStr = entry.data && Object.keys(entry.data).length > 0
-    ? " " + JSON.stringify(entry.data).slice(0, 200)
-    : "";
+  const ts = document.createElement("span");
+  ts.className = "ts";
+  ts.textContent = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
 
-  div.innerHTML = `<span class="ts">${ts}</span><span class="level">${(entry.level || "info").toUpperCase()}</span>${escapeHtml(entry.message || "")}${escapeHtml(dataStr)}${cmdInfo}${tabInfo}${durInfo}`;
+  const level = document.createElement("span");
+  level.className = "level";
+  level.textContent = (entry.level || "info").toUpperCase();
+
+  const msgText = document.createElement("span");
+  msgText.textContent = (entry.message || "") + (
+    entry.data && Object.keys(entry.data).length > 0
+      ? " " + JSON.stringify(entry.data).slice(0, 200)
+      : ""
+  );
+
+  div.appendChild(ts);
+  div.appendChild(level);
+  div.appendChild(msgText);
+
+  if (entry.commandId) {
+    const cmdId = document.createElement("span");
+    cmdId.className = "cmd-id";
+    cmdId.textContent = `[${String(entry.commandId).slice(0, 8)}]`;
+    div.appendChild(cmdId);
+  }
+  if (entry.tabId != null) {
+    const tabInfo = document.createElement("span");
+    tabInfo.style.color = "#666";
+    tabInfo.textContent = ` tab=${entry.tabId}`;
+    div.appendChild(tabInfo);
+  }
+  if (entry.durationMs != null) {
+    const durInfo = document.createElement("span");
+    durInfo.style.color = "#666";
+    durInfo.textContent = ` ${entry.durationMs}ms`;
+    div.appendChild(durInfo);
+  }
+
   container.appendChild(div);
 
   if (!skipScroll) {

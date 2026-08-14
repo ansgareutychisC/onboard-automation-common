@@ -51,19 +51,51 @@ export class BridgeHub extends DurableObject<Env> {
       return new Response(null, { status: 101, webSocket: client });
     }
 
+    // ISSUE-R2-9 fix: defense-in-depth — validate x-bridge-token on all routes
+    // (the worker's /api/* middleware should have already done this, but if the
+    // DO is ever exposed directly via a misconfigured proxy, this prevents
+    // unauthenticated queue/poll access). Skip when BRIDGE_NO_AUTH === "1".
+    if (this.env.BRIDGE_NO_AUTH !== "1" && this.env.BRIDGE_TOKEN) {
+      const token = request.headers.get("x-bridge-token") || "";
+      if (token !== this.env.BRIDGE_TOKEN && url.pathname !== "/status" && url.pathname !== "/api/extensions") {
+        return new Response("unauthorized", { status: 401 });
+      }
+    }
+
     if (url.pathname === "/status" || url.pathname === "/api/extensions") {
       return Response.json(this.getStatus());
     }
 
     if (url.pathname === "/command" && request.method === "POST") {
       const body = await request.json() as { cmd: Command; timeout?: number };
-      const result = await this.sendCommand(body.cmd, body.timeout ?? 60_000);
-      return Response.json(result);
+      // ISSUE-5 + ISSUE-R2-11 + ISSUE-R3-4 + ISSUE-R3-5 fix: distinguish failure modes:
+      //   - "No extension connected" → HTTP 503 (Python client falls back to HTTP queue)
+      //   - "Extension disconnected" (mid-command) → HTTP 503 (same fallback semantics)
+      //   - "Command X timed out after Yms" → HTTP 504 (Python client raises BridgeTimeoutError)
+      //   - Command returned ok:false (e.g. selector not found, fetch 404) → HTTP 200
+      //     with {ok:false, error:...} body (Python client calls raise_for_error()
+      //     to get a typed BridgeCommandError)
+      //   - Internal error (anything else) → HTTP 500
+      try {
+        const result = await this.sendCommand(body.cmd, body.timeout ?? 60_000);
+        return Response.json(result);
+      } catch (err) {
+        const errMsg = String((err as Error).message || err);
+        if (errMsg.includes("No extension connected") || errMsg.includes("Extension disconnected")) {
+          return Response.json({ ok: false, error: errMsg }, { status: 503 });
+        }
+        if (errMsg.includes("timed out") || errMsg.includes("timeout")) {
+          return Response.json({ ok: false, error: errMsg }, { status: 504 });
+        }
+        return Response.json({ ok: false, error: errMsg }, { status: 500 });
+      }
     }
 
     if (url.pathname === "/poll" && request.method === "GET") {
       const agentId = url.searchParams.get("agentId") || "";
-      const waitS = parseInt(url.searchParams.get("wait") || "25", 10);
+      // ISSUE-24 fix: cap waitS at 60s to prevent a client from holding the
+      // DO in a polling loop for an arbitrary duration.
+      const waitS = Math.min(parseInt(url.searchParams.get("wait") || "25", 10), 60);
       return Response.json(await this.poll(agentId, waitS));
     }
 
@@ -110,6 +142,15 @@ export class BridgeHub extends DurableObject<Env> {
       commandCount: 0,
       lastSeen: Date.now(),
     };
+
+    // ISSUE-23 fix: if the worker forwarded an x-bridge-token header, treat
+    // it as equivalent to a successful in-band AUTH message. This allows the
+    // extension to skip the AUTH round-trip when the worker already validated
+    // the token via its auth middleware.
+    if (token && (token === this.env.BRIDGE_TOKEN || this.env.BRIDGE_NO_AUTH === "1")) {
+      conn.authenticated = true;
+    }
+
     this.connections.set(connId, conn);
 
     // Start sweeper on first connection
@@ -127,7 +168,9 @@ export class BridgeHub extends DurableObject<Env> {
       try { msg = JSON.parse(event.data as string); } catch { return; }
       conn.lastSeen = Date.now();
 
-      // Pre-auth gate: only allow auth, log, pong before authenticated
+      // Pre-auth gate: only allow auth, log, pong before authenticated.
+      // ISSUE-23 fix: tightened to ONLY allow `auth` (previously allowed `log`
+      // and `pong` — log injection / spam vector).
       if (!conn.authenticated) {
         if (msg.type === "auth") {
           if (this.env.BRIDGE_NO_AUTH === "1" || msg.token === this.env.BRIDGE_TOKEN) {
@@ -138,7 +181,8 @@ export class BridgeHub extends DurableObject<Env> {
           }
           return;
         }
-        if (msg.type !== "log" && msg.type !== "pong") return;
+        // Only `auth` is allowed pre-auth — drop everything else silently.
+        return;
       }
 
       switch (msg.type) {
@@ -238,26 +282,45 @@ export class BridgeHub extends DurableObject<Env> {
       } catch (err) {
         clearTimeout(timer);
         this.pending.delete(cmdId);
-        reject(new Error(`Failed to send command to extension: ${err}`));
+        // ISSUE-R4-1 fix: ws.send() throws when the WS transitioned OPEN→CLOSING
+        // between pickExtension's check and now. The command was NEVER sent.
+        // Treat as "Extension disconnected" so the /command handler returns 503
+        // and the Python client falls back to the HTTP queue (safe — no
+        // duplicate-execution risk since the command was never delivered).
+        reject(new Error(`Extension disconnected (failed to send command to extension: ${err})`));
       }
     });
   }
 
   handleResultPost(result: Result) {
-    // 1. Save to httpResults (for HTTP-polling clients)
-    this.httpResults.set(result.id, result);
+    // ISSUE-9 fix: stamp a received-at timestamp so the sweeper can evict
+    // old entries. Previously the sweeper checked `r.ts` (which is undefined
+    // on the Result type) — no entries were ever swept, leading to unbounded
+    // memory growth in the DO.
+    const stamped = { ...result, _receivedAt: Date.now() } as Result & { _receivedAt: number };
+    this.httpResults.set(result.id, stamped);
 
     // 2. Resolve any pending WS future for this cmdId (cross-channel)
     const p = this.pending.get(result.id);
     if (p) {
       clearTimeout(p.timer);
       this.pending.delete(result.id);
-      if (result.ok) p.resolve(result);
-      else p.reject(new Error(result.error || "Command failed"));
+      // ISSUE-R2-11 fix: RESOLVE (not reject) the future with the full result
+      // object, even when ok:false. This lets the /command handler return
+      // HTTP 200 with {ok:false, error:...} so the Python client can raise
+      // a typed BridgeCommandError via CommandResult.raise_for_error().
+      // Previously, ok:false caused a rejection → HTTP 500 → BridgeProtocolError.
+      p.resolve(result);
     }
   }
 
   async poll(agentId: string, waitS: number) {
+    // ISSUE-R2-7: the `agentId` parameter is accepted for forward compatibility
+    // but NOT used to filter the queue. HTTP-mode polling is round-robin: any
+    // extension polling via /api/poll receives the next queued command regardless
+    // of which agent it was intended for. This matches /send-http, which doesn't
+    // accept a targetAgentId. If per-agent routing is needed in the future,
+    // /send-http must accept targetAgentId and this method must filter by it.
     const deadline = Date.now() + waitS * 1000;
     while (Date.now() < deadline) {
       const cmds = this.httpCommandQueue.splice(0, 50);
@@ -275,11 +338,14 @@ export class BridgeHub extends DurableObject<Env> {
     const now = Date.now();
     // Drop queued HTTP commands older than 5 min
     this.httpCommandQueue = this.httpCommandQueue.filter((c) => now - c.queuedAt < STALE_QUEUE_MS);
-    // Drop HTTP results older than 5 min
+    // ISSUE-9 fix: sweep httpResults by the _receivedAt timestamp we stamp in
+    // handleResultPost. Previously the sweeper checked `r.ts` (undefined on
+    // Result) — no entries were ever swept, causing unbounded memory growth.
     for (const [id, r] of this.httpResults) {
-      // Results don't carry a timestamp — assume the pending entry does
-      const p = this.pending.get(id);
-      if (!p && now - (r as any).ts > STALE_QUEUE_MS) this.httpResults.delete(id);
+      const receivedAt = (r as any)._receivedAt || 0;
+      if (now - receivedAt > STALE_QUEUE_MS) {
+        this.httpResults.delete(id);
+      }
     }
     // Close zombie connections (no message in 90s)
     for (const [connId, conn] of this.connections) {

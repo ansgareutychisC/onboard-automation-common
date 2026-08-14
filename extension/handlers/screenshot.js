@@ -30,22 +30,35 @@ export async function handleScreenshot(msg, ctx) {
     if (format === "jpeg" && typeof quality === "number") captureOpts.quality = quality;
 
     // If the tab isn't active in its window, we need to activate it to capture
-    let restored = false;
-    const previouslyActive = await chrome.tabs.query({ active: true, windowId: tab.windowId });
-    const wasActive = previouslyActive.some((t) => t.id === tabId);
+    let tabFocusRestored = false;
+    let windowFocusRestored = false;
+    const previouslyActiveTab = await chrome.tabs.query({ active: true, windowId: tab.windowId });
+    const wasTabActive = previouslyActiveTab.some((t) => t.id === tabId);
+    // ISSUE-18 fix: also remember the previously-focused window so we can
+    // restore focus to it after capture. The previous code only restored
+    // the previously-active TAB within the same window — leaving focus on
+    // the tab's window when it was a different window.
+    let prevWindow = null;
+    try { prevWindow = await chrome.windows.getLastFocused(); } catch {}
 
-    if (!wasActive) {
+    if (!wasTabActive) {
       await chrome.tabs.update(tabId, { active: true });
-      // Focus the window so captureVisibleTab targets it
-      try { await chrome.windows.update(tab.windowId, { focused: true }); } catch {}
+      tabFocusRestored = true;
+    }
+    // Focus the window so captureVisibleTab targets it (only if not already focused)
+    if (!prevWindow || prevWindow.id !== tab.windowId) {
+      try { await chrome.windows.update(tab.windowId, { focused: true }); windowFocusRestored = true; } catch {}
       await _sleep(150);  // let the tab become visible
-      restored = true;
     }
 
     const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, captureOpts);
 
-    if (restored && previouslyActive[0]) {
-      try { await chrome.tabs.update(previouslyActive[0].id, { active: true }); } catch {}
+    // Restore focus in reverse order: tab first, then window
+    if (tabFocusRestored && previouslyActiveTab[0]) {
+      try { await chrome.tabs.update(previouslyActiveTab[0].id, { active: true }); } catch {}
+    }
+    if (windowFocusRestored && prevWindow) {
+      try { await chrome.windows.update(prevWindow.id, { focused: true }); } catch {}
     }
 
     if (!dataUrl) {

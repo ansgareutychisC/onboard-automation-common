@@ -19,6 +19,7 @@
 import { MSG, PROTOCOL_VERSION, CONTEXT, buildCapabilities } from "./protocol.js";
 import { info, warn, error } from "./logger.js";
 import { setSender } from "./send.js";
+import { buildWsUrl as _buildWsUrlShared, wsUrlToHttpBase, redactUrl } from "./url.js";
 
 const KEEPALIVE_INTERVAL_MS = 25_000;     // MV3 SW dies after 30s idle
 const WATCHDOG_PERIOD_MIN = 1;            // chrome.alarms minimum granularity
@@ -195,42 +196,11 @@ export function disconnect() {
  *     ?XTransformPort=8787 (Caddy preview gateway routing hint).
  *   - Force pathname = "/" (Caddy only upgrades WS at this path).
  */
-function _buildWsUrl(serverUrl) {
-  let url = serverUrl.trim();
-  url = url.replace(/^http:/i, "ws:").replace(/^https:/i, "wss:");
-  if (!/^wss?:\/\//i.test(url)) url = "ws://" + url;
-  try {
-    const parsed = new URL(url);
-    const isLocal = ["localhost", "127.0.0.1", "0.0.0.0", "::1"].includes(parsed.hostname);
-    if (!isLocal && !parsed.searchParams.has("XTransformPort")) {
-      parsed.searchParams.set("XTransformPort", "8787");
-    }
-    parsed.pathname = "/";
-    return parsed.toString();
-  } catch {
-    return url;
-  }
-}
-
-function _httpBaseUrl() {
-  let url = state.serverUrl.trim()
-    .replace(/^ws:/i, "http:").replace(/^wss:/i, "https:");
-  if (!/^https?:\/\//i.test(url)) url = "http://" + url;
-  try {
-    const parsed = new URL(url);
-    // Strip /ws suffix if present (legacy convention)
-    if (parsed.pathname.endsWith("/ws")) parsed.pathname = parsed.pathname.slice(0, -3);
-    return parsed.toString().replace(/\/$/, "");
-  } catch {
-    return url;
-  }
-}
-
-function _redact(url) {
-  // Strip query params from logs (may contain tokens)
-  try { return new URL(url).origin + new URL(url).pathname; }
-  catch { return url; }
-}
+// ISSUE-26 + ISSUE-R2-4 fix: WS URL building is now shared via lib/url.js
+// to prevent drift between connection.js and sandbox.js.
+function _buildWsUrl(serverUrl) { return _buildWsUrlShared(serverUrl); }
+function _httpBaseUrl() { return wsUrlToHttpBase(state.serverUrl); }
+function _redact(url) { return redactUrl(url); }
 
 // ---------------------------------------------------------------------------
 // Keepalive + watchdog
@@ -299,6 +269,17 @@ function _scheduleReconnect() {
 // HTTP SOS fallback (long-poll)
 // ---------------------------------------------------------------------------
 
+function _authHeaders(extra = {}) {
+  const h = { ...extra };
+  if (state.authToken) h["authorization"] = `Bearer ${state.authToken}`;
+  return h;
+}
+
+// AbortController for the in-flight HTTP long-poll (ISSUE-22 fix).
+// _stopHttpPolling aborts this so disconnect() takes effect immediately
+// instead of waiting up to HTTP_POLL_WAIT_S + 10 seconds.
+let pollAbortController = null;
+
 async function _startHttpPolling() {
   if (state.httpPollActive) return;
   state.httpPollActive = true;
@@ -306,9 +287,13 @@ async function _startHttpPolling() {
   _broadcastStatus();
 
   while (state.httpPollActive) {
+    pollAbortController = new AbortController();
     try {
       const url = `${_httpBaseUrl()}/api/poll?agentId=${encodeURIComponent(state.agentId)}&wait=${HTTP_POLL_WAIT_S}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout((HTTP_POLL_WAIT_S + 10) * 1000) });
+      const res = await fetch(url, {
+        headers: _authHeaders(),
+        signal: pollAbortController.signal,
+      });
       if (!res.ok) {
         warn("http-poll-non-ok", { status: res.status });
         await _sleep(2000);
@@ -326,12 +311,14 @@ async function _startHttpPolling() {
         catch (err) { error("http-poll-cmd-error", { id: cmd.id, error: String(err) }); }
       }
     } catch (err) {
-      if (err.name === "TimeoutError") {
-        // normal — long-poll timed out, just continue
+      if (err.name === "AbortError" || err.name === "TimeoutError") {
+        // normal — long-poll timed out or was aborted by _stopHttpPolling
       } else {
         warn("http-poll-error", { error: String(err) });
         await _sleep(2000);
       }
+    } finally {
+      pollAbortController = null;
     }
   }
   info("http-poll-stopped", {});
@@ -339,6 +326,10 @@ async function _startHttpPolling() {
 
 function _stopHttpPolling() {
   state.httpPollActive = false;
+  if (pollAbortController) {
+    try { pollAbortController.abort(); } catch {}
+    pollAbortController = null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -369,7 +360,7 @@ async function _sendViaHttp(msg) {
     try {
       const res = await fetch(url, {
         method: "POST",
-        headers: { "content-type": "application/json" },
+        headers: _authHeaders({ "content-type": "application/json" }),
         body: JSON.stringify(msg),
         signal: AbortSignal.timeout(10_000),
       });

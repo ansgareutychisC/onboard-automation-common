@@ -8,6 +8,7 @@
 
 import { CMD } from "../lib/protocol.js";
 import { sendResult, sendError } from "../lib/send.js";
+import { isIpAddress } from "../lib/url.js";
 
 export async function handleCookiesGet(msg, ctx) {
   const { url, name } = msg;
@@ -31,12 +32,24 @@ export async function handleCookiesGetAll(msg, ctx) {
 
 export async function handleCookiesSet(msg, ctx) {
   const { url, cookies = [] } = msg;
-  // Derive domain from URL hostname if not specified per-cookie
+  // Derive domain from URL hostname if not specified per-cookie.
+  //
+  // ISSUE-20 + ISSUE-R2-5 fix:
+  // - For hostnames (e.g. example.com, foo.bar.example.com): use ".<hostname>"
+  //   for subdomain coverage. NEVER use just the last 2 labels (would produce
+  //   ".co.uk" for example.co.uk — planting a cookie on the public suffix).
+  //   Callers wanting a registrable-domain cookie (".example.com" to cover
+  //   both example.com and app.example.com) MUST specify `domain` explicitly.
+  // - For IP addresses (IPv4 or IPv6): Chrome rejects domain cookies on IPs —
+  //   they must be host-only. We set domain to "" (empty) and omit it from
+  //   the setDetails, so Chrome creates a host-only cookie.
   let defaultDomain = "";
   try {
     const parsed = new URL(url);
-    // Use ".example.com" form so the cookie applies to subdomains
-    defaultDomain = "." + parsed.hostname.split(".").slice(-2).join(".");
+    if (!isIpAddress(parsed.hostname)) {
+      defaultDomain = "." + parsed.hostname;
+    }
+    // else: defaultDomain stays "" — host-only cookie for IP addresses
   } catch {}
 
   try {
@@ -46,17 +59,19 @@ export async function handleCookiesSet(msg, ctx) {
         url,
         name: c.name,
         value: c.value,
-        domain: c.domain || defaultDomain,
         path: c.path || "/",
         secure: c.secure ?? true,
         httpOnly: c.httpOnly ?? false,
         sameSite: c.sameSite || "no_restriction",
       };
+      // Only set domain if non-empty (host-only cookie when domain is omitted)
+      const domain = c.domain || defaultDomain;
+      if (domain) setDetails.domain = domain;
       if (c.expirationDate) setDetails.expirationDate = c.expirationDate;
       const cookie = await chrome.cookies.set(setDetails);
-      results.push({ name: c.name, ok: !!cookie });
+      results.push({ name: c.name, ok: !!cookie, domain: domain || "(host-only)" });
     }
-    sendResult(msg.id, { results, defaultDomain }, ctx);
+    sendResult(msg.id, { results, defaultDomain: defaultDomain || "(host-only)" }, ctx);
   } catch (err) {
     sendError(msg.id, `cookies.set failed: ${err.message ?? err}`, {}, ctx);
   }

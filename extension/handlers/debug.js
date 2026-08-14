@@ -36,27 +36,139 @@ import { info, warn, error } from "../lib/logger.js";
 
 const _attachRefcount = new Map();  // tabId -> count
 const _sessions = new Map();         // sessionId -> { tabId, kind, startedAt, buffer, listener }
+// ISSUE-R2-8: track which tabs WE attached the debugger to (vs. DevTools or
+// another extension). Exported for use by form.js and xhr.js so they can
+// give a clear error when the foreign debugger isn't ours.
+export const _ownedTabs = new Set();
+
+// ISSUE-12 fix: use crypto.randomUUID() for sessionIds (was Math.random —
+// predictable, allowing an attacker to guess a sessionId and stop another
+// orchestrator's debug session).
+function _generateSessionId(prefix) {
+  return `${prefix}_${crypto.randomUUID()}`;
+}
+
+// ISSUE-10 + ISSUE-11 + ISSUE-R2-3 fix: register listeners that clean up
+// orphaned debugger attachments and sessions.
+//
+// ISSUE-10: on SW restart, _attachRefcount and _sessions are wiped (in-memory),
+// but chrome.debugger attachments may persist in Chrome. We persist
+// _attachRefcount to chrome.storage.session and rehydrate on SW startup,
+// then ONLY attempt cleanup on tabs that had refcount > 0 (avoiding the
+// ISSUE-R2-3 regression where every open tab got an infobar flash).
+//
+// ISSUE-11: if a tab is closed while a debug session is active, the session
+// leaks (buffer stays in memory forever). We listen for chrome.tabs.onRemoved
+// and clean up.
+let _cleanupListenersRegistered = false;
+function _registerCleanupListeners() {
+  if (_cleanupListenersRegistered) return;
+  _cleanupListenersRegistered = true;
+
+  // ISSUE-11: tab closed mid-session → clean up the session + refcount
+  chrome.tabs.onRemoved.addListener((tabId) => {
+    for (const [sid, s] of _sessions) {
+      if (s.tabId === tabId) {
+        warn("debug-session-tab-closed", { sessionId: sid, kind: s.kind, tabId });
+        if (s.listener) {
+          try { chrome.debugger.onEvent.removeListener(s.listener); } catch {}
+        }
+        _sessions.delete(sid);
+      }
+    }
+    // Drop the refcount entry — the tab is gone, no detach needed
+    _attachRefcount.delete(tabId);
+    _persistRefcount();
+  });
+
+  // ISSUE-10 + ISSUE-R2-3 + ISSUE-R3-6 fix: rehydrate _attachRefcount from
+  // session storage and clean up orphaned debugger attachments on tabs that
+  // had refcount > 0 in the prior SW lifetime.
+  //
+  // ISSUE-R3-6: use detach-ONLY (not attach+detach) to avoid triggering
+  // Chrome's "Extension is debugging this browser" infobar on every cleanup.
+  // chrome.debugger.detach on a tab without a debugger throws "Not attached
+  // to tab debuggee" — expected and harmless. On a tab with our orphan, it
+  // succeeds silently. On a tab with DevTools, it throws "Another debugger
+  // is attached" — also harmless.
+  (async () => {
+    try {
+      const stored = await chrome.storage.session.get("_attachRefcount");
+      const priorRefcount = stored._attachRefcount || {};
+      const tabsToClean = Object.keys(priorRefcount).map(Number);
+      for (const tabId of tabsToClean) {
+        // Check if the tab still exists
+        try { await chrome.tabs.get(tabId); }
+        catch { continue; }  // tab is gone — no cleanup needed
+        // detach-only: no infobar, no attach
+        try {
+          await chrome.debugger.detach({ tabId });
+          // Orphan cleaned up — no infobar
+        } catch (err) {
+          // Expected: "Not attached" (no orphan) or "Another debugger" (DevTools)
+        }
+      }
+      // Reset refcount — prior attachments are now cleaned up or owned by DevTools
+      _attachRefcount.clear();
+      _ownedTabs.clear();
+      await _persistRefcount();
+    } catch (err) {
+      // chrome.storage.session may be unavailable — skip cleanup
+      warn("debug-cleanup-skip", { reason: String(err) });
+    }
+  })();
+}
+
+// Persist _attachRefcount to chrome.storage.session so the next SW lifetime
+// knows which tabs had debug sessions (for targeted cleanup).
+let _persistTimer = null;
+function _persistRefcount() {
+  if (_persistTimer) clearTimeout(_persistTimer);
+  _persistTimer = setTimeout(async () => {
+    try {
+      const obj = {};
+      for (const [k, v] of _attachRefcount) obj[k] = v;
+      await chrome.storage.session.set({ _attachRefcount: obj });
+    } catch {}
+    _persistTimer = null;
+  }, 500);
+}
 
 async function _ensureAttached(tabId) {
   const count = _attachRefcount.get(tabId) || 0;
   if (count === 0) {
     try {
       await chrome.debugger.attach({ tabId }, "1.3");
+      _ownedTabs.add(tabId);  // ISSUE-R2-8: mark as ours
     } catch (err) {
+      // ISSUE-16 + ISSUE-R2-8: "Another debugger already attached" can mean:
+      //   (a) a prior SW lifetime left an orphan (handled by cleanup on SW startup)
+      //   (b) DevTools is open on this tab
+      //   (c) another extension has attached
+      // If the tab is in _ownedTabs, it's case (a) — tolerate and proceed.
+      // If not, it's case (b) or (c) — give a clear error.
       if (!String(err?.message).includes("Another debugger")) throw err;
+      if (!_ownedTabs.has(tabId)) {
+        warn("debugger-foreign-attached", { tabId, hint: "DevTools or another extension has the debugger. Close DevTools and retry." });
+        throw new Error(`Tab ${tabId} has a foreign debugger attached (DevTools or another extension). Close DevTools and retry.`);
+      }
+      warn("debugger-already-attached-ours", { tabId, hint: "Orphan from prior SW lifetime — proceeding" });
     }
   }
   _attachRefcount.set(tabId, count + 1);
+  _persistRefcount();  // persist for SW-restart cleanup (ISSUE-10)
 }
 
 async function _maybeDetach(tabId) {
   const count = _attachRefcount.get(tabId) || 0;
   if (count <= 1) {
     _attachRefcount.delete(tabId);
+    _ownedTabs.delete(tabId);  // ISSUE-R2-8: unmark
     try { await chrome.debugger.detach({ tabId }); } catch {}
   } else {
     _attachRefcount.set(tabId, count - 1);
   }
+  _persistRefcount();  // persist for SW-restart cleanup (ISSUE-10)
 }
 
 // ---------------------------------------------------------------------------
@@ -66,7 +178,7 @@ async function _maybeDetach(tabId) {
 export async function handleDebugHarStart(msg, ctx) {
   const { tabId } = msg;
   if (!tabId) { sendError(msg.id, "debug.har.start requires tabId", {}, ctx); return; }
-  const sessionId = `har_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = _generateSessionId("har");
   const session = { tabId, kind: "har", startedAt: Date.now(), buffer: { log: { version: "1.2", creator: { name: "onboard-automation-bridge", version: "1.0" }, entries: [] } }, listener: null };
   _sessions.set(sessionId, session);
 
@@ -157,7 +269,7 @@ export async function handleDebugHarStop(msg, ctx) {
 export async function handleDebugConsoleStart(msg, ctx) {
   const { tabId } = msg;
   if (!tabId) { sendError(msg.id, "debug.console.start requires tabId", {}, ctx); return; }
-  const sessionId = `console_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = _generateSessionId("console");
   const session = { tabId, kind: "console", startedAt: Date.now(), buffer: [], listener: null };
   _sessions.set(sessionId, session);
 
@@ -221,7 +333,7 @@ export async function handleDebugConsoleStop(msg, ctx) {
 export async function handleDebugNetworkStart(msg, ctx) {
   const { tabId, urlPattern = null } = msg;
   if (!tabId) { sendError(msg.id, "debug.network.start requires tabId", {}, ctx); return; }
-  const sessionId = `net_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = _generateSessionId("net");
   const session = { tabId, kind: "network", startedAt: Date.now(), buffer: [], listener: null, urlPattern };
   _sessions.set(sessionId, session);
 
@@ -299,15 +411,28 @@ export async function handleDebugNetworkStop(msg, ctx) {
 export async function handleDebugTraceStart(msg, ctx) {
   const { tabId, categories = "devtools.timeline,v8,disabled-by-default-devtools.timeline" } = msg;
   if (!tabId) { sendError(msg.id, "debug.trace.start requires tabId", {}, ctx); return; }
-  const sessionId = `trace_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const sessionId = _generateSessionId("trace");
   const session = { tabId, kind: "trace", startedAt: Date.now(), buffer: [], listener: null };
   _sessions.set(sessionId, session);
 
   try {
     await _ensureAttached(tabId);
 
+    // ISSUE-R2-2 fix: register the listener AFTER Tracing.start succeeds.
+    // Previously the listener was registered before Tracing.start — if start
+    // threw, the catch block deleted the session but not the listener,
+    // causing a memory leak + event duplication for future trace sessions.
+    await chrome.debugger.sendCommand({ tabId }, "Tracing.start", {
+      traceConfig: { includedCategories: categories.split(",").map((s) => s.trim()) },
+    });
+
+    // ISSUE-17 fix: CDP Tracing.dataCollected events may be delivered with
+    // source.tabId undefined (browser-level tracing). Don't filter by
+    // source.tabId — accept all Tracing.* events while this session is active.
+    // The listener is captured in closure (session-scoped), so even if another
+    // trace session starts concurrently on a different tab, each listener only
+    // pushes to its own session.buffer.
     const listener = (source, method, params) => {
-      if (source?.tabId !== tabId) return;
       if (method === "Tracing.dataCollected") {
         const events = params.value || [];
         session.buffer.push(...events);
@@ -320,13 +445,13 @@ export async function handleDebugTraceStart(msg, ctx) {
     chrome.debugger.onEvent.addListener(listener);
     session.listener = listener;
 
-    await chrome.debugger.sendCommand({ tabId }, "Tracing.start", {
-      traceConfig: { includedCategories: categories.split(",").map((s) => s.trim()) },
-    });
-
     sendResult(msg.id, { sessionId, startedAt: session.startedAt, categories }, ctx);
     info("trace-start", { sessionId, tabId, categories });
   } catch (err) {
+    // ISSUE-R2-2 fix: if listener was registered, remove it before deleting
+    if (session.listener) {
+      try { chrome.debugger.onEvent.removeListener(session.listener); } catch {}
+    }
     _sessions.delete(sessionId);
     sendError(msg.id, `debug.trace.start failed: ${err.message ?? err}`, {}, ctx);
   }
@@ -490,6 +615,9 @@ export async function handleDebugScreenshotFullpage(msg, ctx) {
 // ---------------------------------------------------------------------------
 
 export function registerDebugHandlers(dispatcher) {
+  // ISSUE-10 + ISSUE-11: register cleanup listeners once on first registration
+  _registerCleanupListeners();
+
   dispatcher[CMD.DEBUG_HAR_START] = handleDebugHarStart;
   dispatcher[CMD.DEBUG_HAR_STOP] = handleDebugHarStop;
   dispatcher[CMD.DEBUG_CONSOLE_START] = handleDebugConsoleStart;

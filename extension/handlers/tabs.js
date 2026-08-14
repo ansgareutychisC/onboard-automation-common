@@ -9,7 +9,12 @@ export async function handleTabsOpen(msg, ctx) {
     // Wait for the tab to finish loading (+500ms grace for late JS)
     await _waitForTabLoaded(tab.id);
     await _sleep(500);
-    sendResult(msg.id, { tabId: tab.id, url: tab.url, title: tab.title }, ctx);
+    // ISSUE-19 fix: re-fetch the tab so we report the FINAL url + title
+    // (after redirects), not the creation-time snapshot (which had an
+    // empty title and the requested URL, not the post-redirect URL).
+    let finalTab;
+    try { finalTab = await chrome.tabs.get(tab.id); } catch { finalTab = tab; }
+    sendResult(msg.id, { tabId: finalTab.id, url: finalTab.url, title: finalTab.title }, ctx);
   } catch (err) {
     sendError(msg.id, `tabs.open failed: ${err.message ?? err}`, {}, ctx);
   }
