@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Onboard Automation Bridge",
-  "version": "1.0.0",
-  "description": "Service-agnostic browser automation proxy. Executes commands from any backend worker over a resilient WebSocket + HTTP-fallback protocol. Built-in activatable debugging (HAR capture, console mirror, network/trace recording, DOM snapshot).",
+  "version": "0.9.0",
+  "description": "Service-agnostic browser automation proxy with local macro replay mode. Executes fetch/form/XHR commands from your real browser context to bypass hCaptcha enterprise. Supports standalone macro replay (no backend) or optional WS connection to a Python dev daemon for agent-driven interactive debugging.",
   "permissions": [
     "storage",
     "activeTab",
@@ -10,10 +10,14 @@
     "scripting",
     "debugger",
     "cookies",
+    "webRequest",
+    "nativeMessaging",
     "alarms",
     "idle"
   ],
-  "host_permissions": ["<all_urls>"],
+  "host_permissions": [
+    "<all_urls>"
+  ],
   "background": {
     "service_worker": "background.js",
     "type": "module"
@@ -39,7 +43,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sandbox.html", "sandbox.js"],
+      "resources": ["sandbox.html", "sandbox.js", "macros/*.json"],
       "matches": ["<all_urls>"]
     }
   ]

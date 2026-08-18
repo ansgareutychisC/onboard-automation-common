@@ -1,167 +1,290 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="UTF-8">
   <title>Onboard Automation Bridge</title>
   <style>
-    :root {
-      --bg: #1a1a1a;
-      --fg: #e0e0e0;
-      --muted: #888;
-      --accent: #4a9eff;
-      --success: #4caf50;
-      --warn: #ff9800;
-      --error: #f44336;
-      --card: #2a2a2a;
-      --border: #3a3a3a;
-    }
-    @media (prefers-color-scheme: light) {
-      :root {
-        --bg: #ffffff;
-        --fg: #1a1a1a;
-        --muted: #666;
-        --accent: #1976d2;
-        --success: #2e7d32;
-        --warn: #ed6c02;
-        --error: #d32f2f;
-        --card: #f5f5f5;
-        --border: #e0e0e0;
-      }
-    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-      width: 460px;
-      min-height: 560px;
-      margin: 0;
-      padding: 0;
-      background: var(--bg);
-      color: var(--fg);
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
-      font-size: 13px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      width: 720px;
+      height: 560px;
+      background: #fafafa;
+      color: #1a1a1a;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
     }
+    /* ---- Header ---- */
     .header {
-      padding: 14px 16px;
-      border-bottom: 1px solid var(--border);
+      padding: 8px 12px;
+      background: white;
+      border-bottom: 1px solid #e0e0e0;
       display: flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
+      flex-shrink: 0;
     }
-    .header h1 { font-size: 14px; margin: 0; flex: 1; font-weight: 600; }
+    .header h1 { font-size: 13px; font-weight: 600; flex: 1; }
     .status-dot {
-      width: 10px; height: 10px; border-radius: 50%;
-      background: var(--muted);
-      transition: background 0.2s;
+      width: 9px; height: 9px; border-radius: 50%;
+      background: #999; transition: background 0.2s;
     }
-    .status-dot.connecting { background: var(--warn); animation: pulse 1s infinite; }
-    .status-dot.connected { background: var(--success); }
-    .status-dot.connected-http { background: var(--warn); }
-    .status-dot.error { background: var(--error); }
-    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
-    .status-text { color: var(--muted); font-size: 11px; }
-
-    section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
-    section h2 { font-size: 11px; text-transform: uppercase; color: var(--muted); margin: 0 0 8px; font-weight: 600; letter-spacing: 0.5px; }
-    input[type="text"], input[type="password"] {
-      width: 100%; padding: 6px 8px; background: var(--card); color: var(--fg);
-      border: 1px solid var(--border); border-radius: 4px; font-size: 12px;
-      box-sizing: border-box; font-family: monospace;
-    }
-    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-    .row:last-child { margin-bottom: 0; }
-    button {
-      padding: 6px 12px; background: var(--accent); color: white; border: none;
-      border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 500;
-    }
-    button:hover { opacity: 0.9; }
-    button.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--border); }
-    button.danger { background: var(--error); }
-    .checkbox-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
-    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-    .stat { background: var(--card); padding: 8px; border-radius: 4px; text-align: center; }
-    .stat-value { font-size: 18px; font-weight: 600; }
-    .stat-value.failed { color: var(--error); }
-    .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
-    .log-container {
-      background: #0d0d0d; color: #d4d4d4; padding: 8px; border-radius: 4px;
-      height: 180px; overflow-y: auto; font-family: "SF Mono", Menlo, monospace;
-      font-size: 10px; line-height: 1.4;
-    }
-    @media (prefers-color-scheme: light) {
-      .log-container { background: #1e1e1e; }
-    }
-    .log-entry { margin-bottom: 2px; word-break: break-all; }
-    .log-entry.warn { color: #ffa657; }
-    .log-entry.error { color: #ff7b72; }
-    .log-entry.debug { color: #888; }
-    .log-entry .ts { color: #666; margin-right: 4px; }
-    .log-entry .level { color: #79c0ff; margin-right: 4px; }
-    .log-entry .cmd-id { color: #d2a8ff; margin-left: 4px; font-size: 9px; }
+    .status-dot.connected { background: #0f9d58; }
+    .status-dot.connecting { background: #f4b400; animation: pulse 1s infinite; }
+    .status-dot.error { background: #db4437; }
+    @keyframes pulse { 50% { opacity: 0.4; } }
+    .status-text { font-size: 11px; color: #666; }
     .agent-id {
-      font-family: monospace; font-size: 10px; color: var(--muted);
-      padding: 4px 8px; background: var(--card); border-radius: 4px;
-      display: inline-block;
+      font-family: 'SF Mono', Monaco, monospace; font-size: 9px;
+      color: #888; padding: 2px 6px; background: #f0f0f0;
+      border-radius: 3px; display: inline-block;
     }
-    .quick-start { font-size: 11px; color: var(--muted); line-height: 1.5; }
-    .quick-start code { background: var(--card); padding: 1px 4px; border-radius: 2px; font-family: monospace; color: var(--fg); }
+
+    /* ---- Two-column layout (fits the 720px shell, no overflow) ---- */
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .col {
+      flex: 1;
+      min-width: 0;            /* allow flex to shrink below content size */
+      overflow-y: auto;
+      border-right: 1px solid #e0e0e0;
+    }
+    .col:last-child { border-right: none; }
+
+    .section {
+      padding: 8px 10px;
+      border-bottom: 1px solid #eee;
+    }
+    .section h2 {
+      font-size: 10px; font-weight: 600; color: #888;
+      text-transform: uppercase; letter-spacing: 0.5px;
+      margin-bottom: 6px;
+      display: flex; align-items: center; gap: 6px;
+    }
+    .section h2 .badge {
+      font-size: 9px; font-weight: 500; color: #aaa;
+      text-transform: none; letter-spacing: 0;
+    }
+    .input-group { display: flex; gap: 6px; }
+    input[type="text"], select {
+      flex: 1; padding: 5px 9px; min-width: 0;
+      border: 1px solid #ddd; border-radius: 5px;
+      font-size: 11px; font-family: 'SF Mono', Monaco, monospace;
+      outline: none;
+    }
+    input[type="text"]:focus, select:focus { border-color: #4285f4; }
+    textarea {
+      width: 100%; padding: 5px 7px;
+      border: 1px solid #ddd; border-radius: 5px;
+      font-family: 'SF Mono', Monaco, monospace;
+      outline: none; resize: vertical;
+    }
+    textarea:focus { border-color: #4285f4; }
+    button {
+      padding: 5px 12px; border: none; border-radius: 5px;
+      background: #4285f4; color: white;
+      font-size: 11px; font-weight: 500; cursor: pointer;
+    }
+    button:hover:not(:disabled) { background: #3367d6; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
+    button.secondary {
+      background: white; color: #4285f4; border: 1px solid #4285f4;
+    }
+    button.secondary:hover:not(:disabled) { background: #e8f0fe; }
+    button.danger {
+      background: white; color: #db4437; border: 1px solid #db4437;
+    }
+    button.danger:hover:not(:disabled) { background: #fce8e6; }
+
+    /* ---- Stats ---- */
+    .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 5px; }
+    .stat {
+      background: white; padding: 5px 7px; border-radius: 5px;
+      border: 1px solid #eee; text-align: center;
+    }
+    .stat-label {
+      font-size: 9px; color: #888; text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-value {
+      font-size: 14px; font-weight: 600; color: #1a1a1a;
+      font-family: 'SF Mono', Monaco, monospace;
+    }
+    .stat-value.failed { color: #db4437; }
+
+    /* ---- Log / Capture area (compact, scrollable) ---- */
+    .log-area {
+      background: #1e1e1e; color: #d4d4d4; padding: 5px 7px;
+      border-radius: 5px; font-family: 'SF Mono', Monaco, monospace;
+      font-size: 10px; line-height: 1.35; overflow-y: auto;
+      /* Fixed compact height — the log scrolls instead of expanding the panel */
+      height: 180px;
+      min-height: 120px;
+      max-height: 240px;
+      word-break: break-all;
+    }
+    .log-entry { padding: 1px 0; }
+    .log-entry.info { color: #d4d4d4; }
+    .log-entry.warn { color: #f4b400; }
+    .log-entry.error { color: #db4437; }
+    .log-entry.debug { color: #888; }
+    .log-entry.fetch { color: #7ee787; }
+    .log-entry.macro { color: #79c0ff; }
+    .log-entry.ws { color: #d2a8ff; }
+    .log-time { color: #666; margin-right: 5px; }
+    .log-level { color: #4285f4; margin-right: 4px; font-weight: 600; }
+
+    .checkbox-group {
+      display: flex; align-items: center; gap: 6px;
+      margin-top: 5px; font-size: 10px; color: #666;
+    }
+    .instructions {
+      background: #fff8e1; border: 1px solid #ffe082;
+      padding: 7px 9px; border-radius: 5px;
+      font-size: 10px; line-height: 1.45; color: #5d4037;
+    }
+    .instructions strong { color: #3e2723; }
+    .hint {
+      font-size: 10px; color: #999; margin-top: 4px; line-height: 1.4;
+    }
   </style>
 </head>
 <body>
   <div class="header">
-    <div class="status-dot" id="status-dot"></div>
     <h1>Onboard Automation Bridge</h1>
-    <span class="status-text" id="status-text">disconnected</span>
+    <div class="status-dot" id="statusDot"></div>
+    <span class="status-text" id="statusText">Disconnected</span>
+    <span class="agent-id" id="agentId">ext-???</span>
   </div>
 
-  <section>
-    <h2>Server Connection</h2>
-    <div class="row">
-      <input type="text" id="server-url" placeholder="wss://your-worker.workers.dev or http://localhost:8787" />
-    </div>
-    <div class="row">
-      <input type="password" id="auth-token" placeholder="Auth token (optional)" />
-    </div>
-    <div class="row">
-      <button id="connect-btn">Connect</button>
-      <button id="disconnect-btn" class="secondary">Disconnect</button>
-      <label class="checkbox-row">
-        <input type="checkbox" id="auto-connect" /> Auto-reconnect
-      </label>
-    </div>
-    <div class="row">
-      <span class="agent-id" id="agent-id">agent: …</span>
-    </div>
-  </section>
+  <div class="main">
+    <!-- =================== LEFT COLUMN =================== -->
+    <div class="col">
 
-  <section>
-    <h2>Activity</h2>
-    <div class="stats">
-      <div class="stat">
-        <div class="stat-value" id="stat-received">0</div>
-        <div class="stat-label">Received</div>
+      <div class="section">
+        <h2>Server Connection</h2>
+        <div class="input-group">
+          <input type="text" id="serverUrl" placeholder="wss://..." />
+          <button id="connectBtn">Connect</button>
+        </div>
+        <div class="checkbox-group">
+          <input type="checkbox" id="autoConnect" checked />
+          <label for="autoConnect">Auto-reconnect</label>
+        </div>
       </div>
-      <div class="stat">
-        <div class="stat-value" id="stat-completed">0</div>
-        <div class="stat-label">Completed</div>
-      </div>
-      <div class="stat">
-        <div class="stat-value failed" id="stat-failed">0</div>
-        <div class="stat-label">Failed</div>
-      </div>
-    </div>
-  </section>
 
-  <section>
-    <h2>Diagnostics Log <button id="clear-log" class="secondary" style="float:right;padding:2px 8px;font-size:10px;">Clear</button></h2>
-    <div class="log-container" id="log-container"></div>
-  </section>
+      <div class="section">
+        <h2>Activity</h2>
+        <div class="stats">
+          <div class="stat">
+            <div class="stat-label">Recv</div>
+            <div class="stat-value" id="statReceived">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Done</div>
+            <div class="stat-value" id="statCompleted">0</div>
+          </div>
+          <div class="stat">
+            <div class="stat-label">Fail</div>
+            <div class="stat-value failed" id="statFailed">0</div>
+          </div>
+        </div>
+      </div>
 
-  <section>
-    <h2>Quick Start</h2>
-    <div class="quick-start">
-      Point the extension at any worker.dev URL running the bridge protocol.
-      See <code>docs/PROTOCOL.md</code> for the wire format and
-      <code>docs/DEBUGGING.md</code> for the activatable debug commands.
+      <div class="section">
+        <h2>
+          Diagnostics &amp; Capture
+          <span class="badge" id="captureStats">0 events</span>
+          <button class="secondary" id="clearLogBtn" style="margin-left:auto;padding:2px 8px;font-size:10px;">Clear</button>
+        </h2>
+        <div style="display:flex;gap:4px;margin-bottom:5px;">
+          <button id="exportCaptureBtn" class="secondary" style="flex:1;padding:3px;font-size:10px;">📥 JSON</button>
+          <button id="exportHarBtn" class="secondary" style="flex:1;padding:3px;font-size:10px;">📋 HAR</button>
+        </div>
+        <div style="display:flex;gap:4px;margin-bottom:5px;">
+          <select id="captureFilter" style="font-size:10px;padding:2px 5px;">
+            <option value="">All events</option>
+            <option value="fetch">fetch</option>
+            <option value="ws">WS</option>
+            <option value="macro">macro</option>
+            <option value="form">form</option>
+            <option value="error">errors</option>
+          </select>
+          <label style="font-size:10px;color:#666;display:flex;align-items:center;gap:2px;">
+            <input type="checkbox" id="captureEnabled" checked /> Cap
+          </label>
+          <label style="font-size:10px;color:#666;display:flex;align-items:center;gap:2px;">
+            <input type="checkbox" id="captureForwardWs" checked /> Fwd
+          </label>
+        </div>
+        <div class="log-area" id="logArea">
+          <!-- Unified log: both diagnostics log entries AND capture events.
+               Fixed height + scroll, so the popup shell stays compact. -->
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Sandbox (zstd)</h2>
+        <button id="openSandboxBtn" class="secondary" style="width:100%;padding:6px;font-size:11px;">Open Sandbox Page</button>
+        <div class="hint">Required for AI chat (zstd decompression). Opens in background tab.</div>
+      </div>
+
     </div>
-  </section>
+
+    <!-- =================== RIGHT COLUMN =================== -->
+    <div class="col">
+
+      <div class="section">
+        <h2>Macro Replay <span class="badge">local mode — no backend needed</span></h2>
+
+        <div style="margin-bottom:8px;">
+          <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">Preset:</label>
+          <select id="macroPreset" style="width:100%;padding:5px 8px;font-size:12px;">
+            <option value="">— Select a preset —</option>
+            <option value="signup-onboard">signup-onboard (full signup + onboarding)</option>
+            <option value="create-workspace">create-workspace (on existing account)</option>
+            <option value="activate-trial">activate-trial (needs hCaptcha token)</option>
+            <option value="create-api-key">create-api-key (PAT creation)</option>
+          </select>
+        </div>
+
+        <div style="margin-bottom:6px;">
+          <label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Inputs (JSON):</label>
+          <textarea id="macroInputs" rows="4" style="font-size:11px;" placeholder='{"email":"test@privatimail.com","workspaceName":"My Space"}'></textarea>
+          <div class="hint">Email worker URL + token are pre-filled. Just change email + workspace name.</div>
+        </div>
+
+        <div style="margin-bottom:6px;">
+          <label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Macro JSON:</label>
+          <textarea id="macroJson" rows="6" style="font-size:10px;" placeholder='{"name":"my-macro","steps":[...]}'></textarea>
+        </div>
+
+        <div style="display:flex;gap:6px;">
+          <button id="runMacroBtn" style="flex:1;">▶ Run Macro</button>
+          <button id="stopMacroBtn" class="secondary" disabled style="flex:0 0 70px;">Stop</button>
+        </div>
+
+        <div id="macroResult" style="margin-top:6px;display:none;">
+          <label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Result:</label>
+          <div id="macroResultArea" class="log-area" style="height:140px;max-height:180px;white-space:pre-wrap;"></div>
+        </div>
+      </div>
+
+      <div class="section">
+        <h2>Quick Start</h2>
+        <div class="instructions">
+          <strong>A. Macro Replay (local):</strong> Pick a preset → edit inputs → Run Macro.<br>
+          <strong>B. Backend-driven:</strong> Start Python backend → Connect above → backend drives commands.<br><br>
+          <strong>Testing order:</strong> Start with <code>create-api-key</code> (simplest, 8 steps). Then <code>signup-onboard</code> (full flow, 34 steps).
+        </div>
+      </div>
+
+    </div>
+  </div>
 
   <script src="popup.js"></script>
 </body>

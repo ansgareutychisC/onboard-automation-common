@@ -1,166 +1,900 @@
-// extension/popup.js
-//
-// Popup UI controller. Polls background.js for status every 1s (safety net
-// for missed pushed messages), renders the structured log feed with
-// commandId / tabId / durationMs columns when present, and handles
-// connect/disconnect/clear actions.
+/**
+ * Popup script — connection config + live diagnostics monitor.
+ *
+ * The popup is just a monitor: it shows connection status, command counts,
+ * and a live log feed from the background service worker. All the actual
+ * work happens in background.js.
+ */
 
-const $ = (id) => document.getElementById(id);
-let refreshTimer = null;
+const serverUrlInput = document.getElementById('serverUrl');
+const connectBtn = document.getElementById('connectBtn');
+const autoConnectCheckbox = document.getElementById('autoConnect');
+const statusDot = document.getElementById('statusDot');
+const statusText = document.getElementById('statusText');
+const statReceived = document.getElementById('statReceived');
+const statCompleted = document.getElementById('statCompleted');
+const statFailed = document.getElementById('statFailed');
+const logArea = document.getElementById('logArea');
+const clearLogBtn = document.getElementById('clearLogBtn');
+const agentIdEl = document.getElementById('agentId');
 
-document.addEventListener("DOMContentLoaded", async () => {
-  // Load saved config
-  chrome.runtime.sendMessage({ type: "getConfig" }, (cfg) => {
-    if (chrome.runtime.lastError || !cfg) return;
-    $("server-url").value = cfg.serverUrl || "";
-    $("auth-token").value = cfg.authToken || "";
-    $("auto-connect").checked = cfg.autoConnect !== false;
-  });
+let logEntries = [];
+let refreshInterval = null;
 
-  // Wire up buttons
-  $("connect-btn").addEventListener("click", () => {
-    const serverUrl = $("server-url").value.trim();
-    const authToken = $("auth-token").value.trim();
-    if (!serverUrl) {
-      alert("Please enter a server URL");
+// ---------------------------------------------------------------------------
+// Persisted popup state — defined here so the helpers are available
+// throughout the file. The actual load happens at the bottom (after all
+// `const` declarations of the DOM elements we read from). State is saved
+// to chrome.storage.local under 'popupState' so the user doesn't lose
+// in-progress macro edits when the popup reopens.
+// ---------------------------------------------------------------------------
+
+const PERSISTED_FIELDS = ['macroPreset', 'macroInputs', 'macroJson', 'captureFilter'];
+
+// Debounce timer for saving popup state (avoid writing on every keystroke).
+let saveStateTimer = null;
+
+async function savePopupState() {
+  const state = {
+    macroPreset: (typeof macroPresetSelect !== 'undefined' && macroPresetSelect) ? macroPresetSelect.value : '',
+    macroInputs: (typeof macroInputsTextarea !== 'undefined' && macroInputsTextarea) ? macroInputsTextarea.value : '',
+    macroJson: (typeof macroJsonTextarea !== 'undefined' && macroJsonTextarea) ? macroJsonTextarea.value : '',
+    captureFilter: (typeof captureFilterEl !== 'undefined' && captureFilterEl) ? captureFilterEl.value : '',
+  };
+  try {
+    await chrome.storage.local.set({ popupState: state });
+  } catch (e) {
+    // Storage might be temporarily unavailable — non-fatal
+  }
+}
+
+function scheduleSavePopupState() {
+  if (saveStateTimer) clearTimeout(saveStateTimer);
+  saveStateTimer = setTimeout(savePopupState, 400);  // 400ms debounce
+}
+
+async function loadPopupState() {
+  try {
+    const stored = await chrome.storage.local.get('popupState');
+    return stored.popupState || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Initial config load (server URL + autoConnect — separate from popupState
+// because these are also read by background.js).
+// ---------------------------------------------------------------------------
+
+(async () => {
+  const cfg = await chrome.storage.local.get(['serverUrl', 'autoConnect']);
+  // Default to EMPTY — the extension runs standalone unless the user explicitly
+  // configures a dev daemon URL (for WS dev/debug) or a worker URL (Phase 2).
+  // The user pastes their own URL via the popup. For *.space-z.ai preview
+  // URLs, the bridge listens on port 3000 (the gateway's default proxy target)
+  // so no XTransformPort query param is needed.
+  serverUrlInput.value = cfg.serverUrl || '';
+  autoConnectCheckbox.checked = cfg.autoConnect !== false;
+  refreshStatus();
+  // Start polling for status updates
+  refreshInterval = setInterval(refreshStatus, 1000);
+})();
+
+// ---------------------------------------------------------------------------
+// Event handlers
+// ---------------------------------------------------------------------------
+
+connectBtn.addEventListener('click', async () => {
+  const url = serverUrlInput.value.trim();
+  if (!url) return;
+
+  await chrome.storage.local.set({ serverUrl: url, autoConnect: autoConnectCheckbox.checked });
+
+  if (connectBtn.textContent === 'Connect') {
+    connectBtn.textContent = 'Connecting...';
+    connectBtn.disabled = true;
+    await chrome.runtime.sendMessage({ type: 'connect', serverUrl: url });
+    setTimeout(() => {
+      connectBtn.textContent = 'Disconnect';
+      connectBtn.disabled = false;
+      refreshStatus();
+    }, 1000);
+  } else {
+    await chrome.runtime.sendMessage({ type: 'disconnect' });
+    connectBtn.textContent = 'Connect';
+    refreshStatus();
+  }
+});
+
+autoConnectCheckbox.addEventListener('change', async () => {
+  await chrome.storage.local.set({ autoConnect: autoConnectCheckbox.checked });
+});
+
+clearLogBtn.addEventListener('click', async () => {
+  await chrome.runtime.sendMessage({ type: 'clearLog' });
+  logEntries = [];
+  renderLog();
+  refreshStatus();
+});
+
+document.getElementById('openSandboxBtn').addEventListener('click', async () => {
+  const url = chrome.runtime.getURL('sandbox.html');
+  await chrome.tabs.create({ url, active: false });
+});
+
+// ---------------------------------------------------------------------------
+// Status polling + rendering
+// ---------------------------------------------------------------------------
+
+async function refreshStatus() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'getStatus' });
+    if (!resp) return;
+    renderStatus(resp);
+    if (resp.log) {
+      logEntries = resp.log;
+      renderCaptureList();  // unified render (replaces old renderLog)
+    }
+  } catch (e) {
+    // Background service worker might be starting up
+  }
+}
+
+function renderStatus(s) {
+  // Status dot
+  statusDot.className = 'status-dot ' + s.status;
+  const statusLabels = {
+    connected: 'Connected',
+    connecting: 'Connecting...',
+    disconnected: 'Disconnected',
+    error: 'Error',
+  };
+  statusText.textContent = statusLabels[s.status] || s.status;
+  if (s.status === 'connected') {
+    connectBtn.textContent = 'Disconnect';
+  } else if (s.status === 'connecting') {
+    connectBtn.textContent = 'Connecting...';
+  } else {
+    connectBtn.textContent = 'Connect';
+  }
+
+  // Stats
+  statReceived.textContent = s.commandsReceived || 0;
+  statCompleted.textContent = s.commandsCompleted || 0;
+  statFailed.textContent = s.commandsFailed || 0;
+
+  // Agent ID
+  agentIdEl.textContent = s.agentId || 'ext-???';
+
+  // Error
+  if (s.lastError && s.status === 'error') {
+    statusText.textContent = s.lastError.slice(0, 50);
+  }
+
+  // Capture stats — render if the diagnostics panel function is defined
+  // (defined below in the Diagnostics & Capture panel section)
+  if (typeof renderCaptureStats === 'function' && s.capture) {
+    renderCaptureStats(s.capture);
+  }
+}
+
+function renderLog() {
+  if (!logEntries || logEntries.length === 0) {
+    logArea.innerHTML = '<div style="color:#666;font-style:italic;">No activity yet</div>';
+    return;
+  }
+  // Show last 50 entries, newest at bottom
+  const html = logEntries.slice(-50).map(e => {
+    const time = e.ts.split('T')[1]?.split('.')[0] || e.ts;
+    const level = e.level || 'info';
+    let dataStr = '';
+    if (e.data) {
+      try {
+        dataStr = ' ' + JSON.stringify(e.data).slice(0, 200);
+      } catch (err) { /* ignore */ }
+    }
+    return `<div class="log-entry ${level}"><span class="log-time">${time}</span><span class="log-level">${level.toUpperCase()}</span>${escapeHtml(e.message)}${escapeHtml(dataStr)}</div>`;
+  }).join('');
+  logArea.innerHTML = html;
+  // Auto-scroll to bottom
+  logArea.scrollTop = logArea.scrollHeight;
+}
+
+function escapeHtml(str) {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+// Listen for live log updates from background
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'log' && msg.entry) {
+    logEntries.push(msg.entry);
+    if (logEntries.length > 200) logEntries.shift();
+    renderCaptureList();  // unified render
+  } else if (msg.type === 'status') {
+    renderStatus(msg.status);
+  } else if (msg.type === 'macro-complete') {
+    showMacroResult(msg.result);
+    runMacroBtn.disabled = false;
+    runMacroBtn.textContent = '▶ Run Macro';
+    stopMacroBtn.disabled = true;
+  } else if (msg.type === 'capture-event' && msg.event) {
+    captureRing.push(msg.event);
+    if (captureRing.length > 100) captureRing.shift();
+    renderCaptureList();  // unified render
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Macro Replay
+// ---------------------------------------------------------------------------
+
+const macroPresetSelect = document.getElementById('macroPreset');
+const macroInputsTextarea = document.getElementById('macroInputs');
+const macroJsonTextarea = document.getElementById('macroJson');
+const runMacroBtn = document.getElementById('runMacroBtn');
+const stopMacroBtn = document.getElementById('stopMacroBtn');
+const macroResultDiv = document.getElementById('macroResult');
+const macroResultArea = document.getElementById('macroResultArea');
+
+// Load preset macros from the extension's bundled macros/ directory.
+// We use chrome.runtime.getURL to fetch them.
+const presetCache = {};
+
+// Default inputs — empty by default. The user configures these via the
+// popup config panel (emailWorkerUrl, emailWorkerToken) or pastes them
+// into the inputs textarea per macro run. Each custom domain has its own
+// email worker, so we don't hardcode any URLs here.
+const DEFAULT_INPUTS = {
+  email: '',
+  workspaceName: 'My Workspace',
+  workspaceIcon: '🏠',
+  emailWorkerUrl: '',
+  emailWorkerToken: '',
+  locale: 'en-US',
+  timezone: 'America/Los_Angeles',
+};
+
+// Pre-fill the inputs textarea with defaults on first load.
+// If the user has a persisted state, it will override this at the bottom
+// of the file (after all const declarations are in scope).
+macroInputsTextarea.value = JSON.stringify(DEFAULT_INPUTS, null, 2);
+
+macroPresetSelect.addEventListener('change', async () => {
+  const name = macroPresetSelect.value;
+  scheduleSavePopupState();  // persist the selected preset
+  if (!name) return;
+  if (!presetCache[name]) {
+    try {
+      const url = chrome.runtime.getURL(`macros/${name}.json`);
+      const resp = await fetch(url);
+      presetCache[name] = await resp.json();
+    } catch (e) {
+      alert(`Failed to load preset ${name}: ${e.message}`);
+      macroPresetSelect.value = '';
       return;
     }
-    chrome.runtime.sendMessage({ type: "connect", serverUrl, authToken }, () => {});
-  });
+  }
+  macroJsonTextarea.value = JSON.stringify(presetCache[name], null, 2);
+  
+  // Adjust default inputs based on the preset
+  if (name === 'create-api-key' || name === 'activate-trial') {
+    // These only need spaceId, not email worker stuff
+    macroInputsTextarea.value = JSON.stringify({
+      spaceId: 'YOUR_SPACE_ID_HERE',
+      ...(name === 'activate-trial' ? { captchaToken: 'P1_eyJ...', trialDays: 14 } : {}),
+      ...(name === 'create-api-key' ? { integrationName: 'automation-pat', expiration: '1_year' } : {}),
+    }, null, 2);
+  } else if (name === 'create-workspace') {
+    macroInputsTextarea.value = JSON.stringify({
+      workspaceName: 'New Workspace',
+      workspaceIcon: '🚀',
+      planType: 'personal',
+    }, null, 2);
+  } else {
+    // signup-onboard — use the full default inputs
+    macroInputsTextarea.value = JSON.stringify(DEFAULT_INPUTS, null, 2);
+  }
+});
 
-  $("disconnect-btn").addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "disconnect" }, () => {});
-  });
-
-  $("clear-log").addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "clearLog" }, () => {
-      $("log-container").innerHTML = "";
-    });
-  });
-
-  // Listen for live log entries + status updates from background
-  chrome.runtime.onMessage.addListener((msg) => {
-    if (!msg || typeof msg.type !== "string") return;
-    if (msg.type === "log" && msg.entry) {
-      appendLogEntry(msg.entry);
-    } else if (msg.type === "status" && msg.status) {
-      renderStatus(msg.status);
+runMacroBtn.addEventListener('click', async () => {
+  let macro, inputs;
+  try {
+    macro = JSON.parse(macroJsonTextarea.value);
+    if (!macro.steps || !Array.isArray(macro.steps)) {
+      throw new Error('Macro must have a "steps" array');
     }
-  });
+  } catch (e) {
+    alert('Invalid macro JSON: ' + e.message);
+    return;
+  }
+  try {
+    inputs = macroInputsTextarea.value.trim()
+      ? JSON.parse(macroInputsTextarea.value)
+      : {};
+  } catch (e) {
+    alert('Invalid inputs JSON: ' + e.message);
+    return;
+  }
 
-  // Initial fetch + start polling
-  await fetchStatus();
-  refreshTimer = setInterval(fetchStatus, 1000);
+  // Disable the run button + show progress
+  runMacroBtn.disabled = true;
+  runMacroBtn.textContent = 'Running...';
+  stopMacroBtn.disabled = false;
+  macroResultDiv.style.display = 'block';
+  macroResultArea.textContent = '⏳ Running macro "' + (macro.name || 'unnamed') + '"...\n\n';
+
+  // Send to background
+  try {
+    await chrome.runtime.sendMessage({ type: 'runMacro', macro, inputs });
+  } catch (e) {
+    showMacroResult({ ok: false, error: 'Failed to start macro: ' + e.message });
+    runMacroBtn.disabled = false;
+    runMacroBtn.textContent = '▶ Run Macro';
+    stopMacroBtn.disabled = true;
+  }
 });
 
-window.addEventListener("beforeunload", () => {
-  if (refreshTimer) clearInterval(refreshTimer);
+stopMacroBtn.addEventListener('click', () => {
+  // Currently no graceful stop — just re-enable the button.
+  // A full stop would require a cancellation token in the macro runner.
+  stopMacroBtn.disabled = true;
+  macroResultArea.textContent += '\n⚠ Stop requested (current step will finish).';
 });
 
-async function fetchStatus() {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ type: "getStatus" }, (resp) => {
-      if (chrome.runtime.lastError || !resp) { resolve(); return; }
-      renderStatus(resp.status);
-      renderLogs(resp.logEntries || []);
-      $("agent-id").textContent = "agent: " + (resp.agentId || "…");
-      resolve();
+function showMacroResult(result) {
+  const ok = result.ok !== false;
+  const header = ok
+    ? `✅ Macro "${result.name}" completed in ${result.durationMs}ms (${result.stepCount} steps)\n`
+    : `❌ Macro "${result.name || '?'}" failed: ${result.error}\n   Completed ${result.completedSteps}/${result.stepCount} steps\n`;
+
+  const stepsHtml = (result.steps || []).map(s => {
+    const icon = s.ok ? '✓' : '✗';
+    const detail = s.ok
+      ? (s.summary ? JSON.stringify(s.summary).slice(0, 200) : '')
+      : (s.error || '');
+    return `  ${icon} ${s.step}${detail ? ' → ' + detail : ''}`;
+  }).join('\n');
+
+  const results = result.results
+    ? '\n\n--- Final Results ---\n' + JSON.stringify(result.results, null, 2).slice(0, 2000)
+    : '';
+
+  macroResultArea.textContent = header + '\n' + stepsHtml + results;
+}
+
+// ---------------------------------------------------------------------------
+// Persist in-progress edits — debounced save on input/change so the user
+// doesn't lose their macro JSON / inputs / preset / filter when the popup
+// closes (Chrome destroys the popup DOM on close, but storage survives).
+// ---------------------------------------------------------------------------
+
+macroInputsTextarea.addEventListener('input', scheduleSavePopupState);
+macroJsonTextarea.addEventListener('input', scheduleSavePopupState);
+
+// Cleanup on popup close
+window.addEventListener('beforeunload', () => {
+  // Flush any pending state save so the user's last edits aren't lost.
+  if (saveStateTimer) {
+    clearTimeout(saveStateTimer);
+    savePopupState();  // fire-and-forget — popup is closing anyway
+  }
+  if (refreshInterval) clearInterval(refreshInterval);
+});
+
+// ---------------------------------------------------------------------------
+// Diagnostics & Capture panel
+//
+// Renders the live capture ring from the background service worker. Supports:
+//   - Export full capture buffer as JSON (masked)
+//   - Export as HAR (browser devtools-compatible)
+//   - Clear the buffer (after confirm)
+//   - Filter by event type (fetch / ws / macro / form / error)
+//   - Toggle capture on/off
+//   - Toggle WS forwarding on/off
+//
+// The capture ring lives in the background SW (not the popup) so it survives
+// popup close. The popup just queries + renders.
+// ---------------------------------------------------------------------------
+
+const exportCaptureBtn = document.getElementById('exportCaptureBtn');
+const exportHarBtn = document.getElementById('exportHarBtn');
+const captureStatsEl = document.getElementById('captureStats');
+const captureFilterEl = document.getElementById('captureFilter');
+const captureEnabledChk = document.getElementById('captureEnabled');
+const captureForwardWsChk = document.getElementById('captureForwardWs');
+// Note: clearLogBtn is already defined above (line 18) — reused for clearing capture buffer
+
+let captureRing = [];        // last fetched ring (masked events)
+let captureFilter = '';      // current filter
+
+// Load persisted capture toggle states (so the checkboxes reflect the SW state)
+(async () => {
+  const stored = await chrome.storage.local.get(['captureEnabled', 'captureForwardWs']);
+  if (typeof stored.captureEnabled === 'boolean') captureEnabledChk.checked = stored.captureEnabled;
+  if (typeof stored.captureForwardWs === 'boolean') captureForwardWsChk.checked = stored.captureForwardWs;
+})();
+
+// ---------------------------------------------------------------------------
+// Render the capture list (filtered, last 50 events, auto-scroll to bottom)
+// ---------------------------------------------------------------------------
+
+function eventMatchesFilter(event, filter) {
+  if (!filter) return true;
+  const t = event.type || '';
+  const d = event.data || {};
+  switch (filter) {
+    case 'fetch':
+      return t === 'fetch';
+    case 'ws':
+      return t === 'ws.send' || t === 'ws.recv' || t.startsWith('ws.');
+    case 'macro':
+      return t.startsWith('macro.');
+    case 'form':
+      return t.startsWith('form.');
+    case 'error':
+      // errors only — match events with ok=false OR error in data
+      return d.ok === false || d.error || d.level === 'error' || t === 'result.error' || t === 'state.error';
+    default:
+      return true;
+  }
+}
+
+function renderCaptureList() {
+  // Unified log: merge old-style logEntries (from getStatus.log) with captureRing.
+  // Both are rendered into #logArea — no separate capture list anymore.
+  const allEntries = [...(logEntries || []).map(e => ({
+    ts: new Date(e.ts).getTime() || 0,
+    iso: e.ts,
+    type: 'log',
+    data: { level: e.level, message: e.message, ...(e.data ? { data: e.data } : {}) },
+  })), ...(captureRing || [])];
+  
+  if (allEntries.length === 0) {
+    logArea.innerHTML = '<div style="color:#666;font-style:italic;">No activity yet. Run a macro or connect to a backend.</div>';
+    return;
+  }
+  const filtered = allEntries.filter(e => eventMatchesFilter(e, captureFilter));
+  const slice = filtered.slice(-80);
+  const html = slice.map(e => {
+    const time = (e.iso || '').split('T')[1]?.split('.')[0] || '';
+    const type = e.type || '?';
+    const id = e.id ? ` #${String(e.id).slice(0, 12)}` : '';
+    let detail = '';
+    try {
+      const data = e.data || {};
+      switch (type) {
+        case 'fetch':
+          detail = `${data.method || 'GET'} ${data.url || '?'} → ${data.status || (data.error ? 'ERR' : '?')}${data.durationMs ? ` (${data.durationMs}ms)` : ''}`;
+          break;
+        case 'ws.recv':
+          detail = `← ${(data.message && data.message.type) || 'msg'}`;
+          break;
+        case 'ws.send':
+          detail = `→ ${(data.message && data.message.type) || 'msg'}`;
+          break;
+        case 'macro.step':
+          detail = `${e.data.stepId || '?'}: ${e.data.cmd || '?'} ${e.data.ok ? '✓' : '✗'}`;
+          break;
+        case 'macro.start':
+          detail = `"${e.data.name}" (${e.data.stepCount} steps)`;
+          break;
+        case 'macro.complete':
+          detail = `"${e.data.name}" ${e.data.ok ? '✓' : '✗'} (${e.data.durationMs}ms)`;
+          break;
+        case 'macro.retry':
+          detail = `attempt ${e.data.attempt} (${e.data.stepId || '?'}) ${e.data.lastOk === false ? '✗' : '…'}`;
+          break;
+        case 'sandbox.open':
+          detail = `${e.data.url} ${e.data.ok ? '✓' : '✗'}`;
+          break;
+        case 'form.eval':
+        case 'form.fill':
+        case 'form.click':
+        case 'form.wait':
+          detail = `tab=${e.data.tabId} sel=${(e.data.selector || (e.data.functionSource || '').slice(0, 40) || '?')}${e.data.ok ? ' ✓' : ' ✗'}`;
+          break;
+        case 'cookies.getAll':
+          detail = `${e.data.url} (${e.data.count} cookies)`;
+          break;
+        case 'cookies.set':
+          detail = `${e.data.url} set ${e.data.count} cookies`;
+          break;
+        case 'cookies.remove':
+          detail = `${e.data.url} removed ${e.data.removed}/${e.data.requested}`;
+          break;
+        case 'cookies.get':
+          detail = `${e.data.url} ${e.data.name} found=${e.data.found}`;
+          break;
+        case 'xhr.intercept':
+          detail = `${e.data.urlPattern} ${e.data.phase || ''} ${e.data.matchedUrl || ''}${e.data.ok === false ? ' ✗' : ''}`;
+          break;
+        case 'eval':
+          detail = `tab=${e.data.tabId} ${e.data.ok ? '✓' : '✗'}${e.data.error ? ' ' + e.data.error.slice(0, 80) : ''}`;
+          break;
+        case 'state.connect':
+          detail = `${e.data.status || ''}${e.data.url ? ' ' + e.data.url : ''}`;
+          break;
+        case 'state.disconnect':
+          detail = `code=${e.data.code || ''} ${e.data.reason || e.data.source || ''}`;
+          break;
+        case 'state.error':
+          detail = e.data.lastError || e.data.error || '';
+          break;
+        case 'log':
+          detail = `[${e.data.level}] ${e.data.message}`;
+          break;
+        case 'result.send':
+          detail = `ok=${e.data.result && e.data.result.ok}`;
+          break;
+        case 'result.error':
+          detail = e.data.error || '';
+          break;
+        case 'screenshot':
+          detail = `tab=${e.data.tabId} (${e.data.len} bytes)`;
+          break;
+        case 'tabs.open':
+          detail = `${e.data.url} → tab=${e.data.tabId}`;
+          break;
+        case 'tabs.close':
+        case 'tabs.focus':
+          detail = `tab=${e.data.tabId}`;
+          break;
+        case 'tabs.list':
+          detail = `${e.data.count} tabs`;
+          break;
+        case 'getCaptchaToken':
+          detail = `${e.data.source || ''} ${e.data.ok ? '✓' : '✗'}`;
+          break;
+        default:
+          detail = JSON.stringify(e.data).slice(0, 120);
+      }
+    } catch (err) {
+      detail = '<render error: ' + err.message + '>';
+    }
+    const isError = e.data && (e.data.ok === false || e.data.error || e.data.level === 'error');
+    const color = isError ? '#db4437' : type.startsWith('ws.') ? '#4285f4'
+      : type.startsWith('macro.') ? '#0f9d58'
+      : type.startsWith('form.') ? '#f4b400'
+      : '#d4d4d4';
+    return `<div class="log-entry ${type.split('.')[0] || 'info'}" style="color:${color};"><span class="log-time">${time}</span> <span class="log-level">${type}${id}</span> ${escapeHtml(detail)}</div>`;
+  }).join('');
+  logArea.innerHTML = html;
+  // Auto-scroll to bottom (newest events)
+  logArea.scrollTop = logArea.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
+// Refresh the capture ring from the background. Called every 2s by the polling
+// interval below. The popup also receives 'capture-event' push messages from
+// the background for live updates between polls.
+// ---------------------------------------------------------------------------
+
+async function refreshCapture() {
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'getCaptureRing' });
+    if (resp && resp.ok) {
+      captureRing = resp.ring || [];
+      renderCaptureList();
+    }
+  } catch (e) {
+    // Background service worker might be starting up
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Update the capture stats line (called from refreshStatus above)
+// ---------------------------------------------------------------------------
+
+function renderCaptureStats(capture) {
+  if (!capture) return;
+  const fwdStatus = capture.enabled === false ? 'OFF'
+    : capture.forwardWs && capture.wsConnected ? 'LIVE'
+    : capture.forwardWs ? 'CACHED'
+    : 'LOCAL';
+  captureStatsEl.textContent = `${capture.totalEvents || 0} events · ${fwdStatus}${capture.lastPersistError ? ' ⚠' : ''}`;
+}
+
+// ---------------------------------------------------------------------------
+// Export buttons
+// ---------------------------------------------------------------------------
+
+function downloadBlob(filename, content, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function timestampForFilename() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+}
+
+exportCaptureBtn.addEventListener('click', async () => {
+  exportCaptureBtn.textContent = '⏳ Exporting...';
+  exportCaptureBtn.disabled = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'getCaptureBuffer' });
+    if (!resp || !resp.ok) {
+      alert('Failed to get capture buffer: ' + (resp && resp.error ? resp.error : 'unknown'));
+      return;
+    }
+    const payload = {
+      schema: 'notion-onboarding-capture/v1',
+      exportedAt: resp.exportedAt,
+      agentId: resp.agentId,
+      serverUrl: resp.serverUrl,
+      totalEvents: resp.totalEvents,
+      ring: resp.ring,
+      fullLog: resp.fullLog,
+    };
+    const filename = `notion-capture-${timestampForFilename()}.json`;
+    downloadBlob(filename, JSON.stringify(payload, null, 2), 'application/json');
+  } catch (e) {
+    alert('Export failed: ' + e.message);
+  } finally {
+    exportCaptureBtn.textContent = '📥 Export Capture (JSON)';
+    exportCaptureBtn.disabled = false;
+  }
+});
+
+exportHarBtn.addEventListener('click', async () => {
+  exportHarBtn.textContent = '⏳ Building HAR...';
+  exportHarBtn.disabled = true;
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'getCaptureBuffer' });
+    if (!resp || !resp.ok) {
+      alert('Failed to get capture buffer: ' + (resp && resp.error ? resp.error : 'unknown'));
+      return;
+    }
+    const har = captureToHar(resp.ring, resp.fullLog, resp.exportedAt, resp.agentId);
+    const filename = `notion-capture-${timestampForFilename()}.har`;
+    downloadBlob(filename, JSON.stringify(har, null, 2), 'application/json');
+  } catch (e) {
+    alert('HAR export failed: ' + e.message);
+  } finally {
+    exportHarBtn.textContent = '📋 Export as HAR';
+    exportHarBtn.disabled = false;
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Convert capture events (fetch + xhr.intercept) into a HAR 1.2 archive.
+// HAR spec: http://www.softwareishard.com/blog/har-12-spec/
+// ---------------------------------------------------------------------------
+
+function captureToHar(ring, fullLog, exportedAt, agentId) {
+  // Combine ring + fullLog, dedup by ts+type, sort by ts ascending
+  const allEvents = (ring || []).concat(fullLog || []);
+  const seen = new Set();
+  const deduped = [];
+  for (const e of allEvents) {
+    const key = `${e.ts}|${e.type}|${e.id || ''}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(e);
+  }
+  deduped.sort((a, b) => (a.ts || 0) - (b.ts || 0));
+
+  const entries = [];
+  for (const e of deduped) {
+    if (e.type !== 'fetch' && e.type !== 'xhr.intercept') continue;
+    const d = e.data || {};
+    const startedDateTime = new Date(e.ts).toISOString();
+    const url = d.url || d.matchedUrl || '';
+    if (!url) continue;
+    const method = d.method || 'GET';
+    const status = d.status || d.responseStatus || 0;
+
+    // Request
+    const reqHeaders = Object.entries(d.reqHeaders || d.requestHeaders || {}).map(([name, value]) => ({ name, value: String(value) }));
+    const reqPostData = d.reqBody || d.requestBody;
+    const queryString = [];
+    try {
+      const u = new URL(url);
+      for (const [name, value] of u.searchParams.entries()) {
+        queryString.push({ name, value });
+      }
+    } catch (err) { /* not a URL */ }
+
+    // Response
+    const respHeaders = Object.entries(d.respHeaders || d.responseHeaders || {}).map(([name, value]) => ({ name, value: String(value) }));
+    const respBody = d.respBody || d.responseBody || '';
+    const respMimeType = (respHeaders.find(h => h.name.toLowerCase() === 'content-type') || {}).value || 'application/json';
+
+    entries.push({
+      startedDateTime,
+      time: d.durationMs || 0,
+      request: {
+        method,
+        url,
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: reqHeaders,
+        queryString,
+        headersSize: -1,
+        bodySize: reqPostData ? String(reqPostData).length : 0,
+        postData: reqPostData ? {
+          mimeType: 'application/json',
+          text: typeof reqPostData === 'string' ? reqPostData : JSON.stringify(reqPostData),
+        } : undefined,
+      },
+      response: {
+        status,
+        statusText: d.statusText || '',
+        httpVersion: 'HTTP/1.1',
+        cookies: [],
+        headers: respHeaders,
+        redirectURL: '',
+        headersSize: -1,
+        bodySize: respBody ? respBody.length : 0,
+        content: {
+          size: respBody ? respBody.length : 0,
+          mimeType: respMimeType,
+          text: respBody,
+        },
+      },
+      cache: {},
+      timings: { send: 0, wait: d.durationMs || 0, receive: 0 },
+      // Custom field — preserved by HAR consumers that ignore unknown fields
+      _captureType: e.type,
+      _captureId: e.id,
+      _captureContext: d.context,
+      _captureTabId: d.tabId,
     });
-  });
+  }
+
+  return {
+    log: {
+      version: '1.2',
+      creator: {
+        name: 'Onboard Automation Bridge',
+        version: '0.7.2',
+      },
+      pages: [],
+      entries,
+      // Custom metadata — not part of HAR spec but useful for downstream tools
+      _meta: {
+        exportedAt,
+        agentId,
+        totalCaptureEvents: deduped.length,
+        harEntries: entries.length,
+        note: 'Generated from extension capture buffer. Sensitive fields are masked (first 8 chars + "...<masked>").',
+      },
+    },
+  };
 }
 
-function renderStatus(status) {
-  if (!status) return;
-  const dot = $("status-dot");
-  const text = $("status-text");
-  dot.className = "status-dot " + (status.status || "disconnected");
-  text.textContent = status.status || "disconnected";
+// ---------------------------------------------------------------------------
+// Clear button
+// ---------------------------------------------------------------------------
 
-  $("stat-received").textContent = status.commandsReceived ?? 0;
-  $("stat-completed").textContent = status.commandsCompleted ?? 0;
-  $("stat-failed").textContent = status.commandsFailed ?? 0;
-
-  if (status.lastError) {
-    text.textContent += " — " + status.lastError;
+// Reuse the existing clearLogBtn (defined at top of file) for clearing capture buffer
+clearLogBtn.addEventListener('click', async () => {
+  if (!confirm('Clear the entire capture buffer + log? This cannot be undone.')) {
+    return;
   }
-}
-
-function renderLogs(entries) {
-  const container = $("log-container");
-  // Re-render the last 50 entries (cheaper than diffing for a small list)
-  container.innerHTML = "";
-  for (const entry of entries) {
-    appendLogEntry(entry, /*skipScroll=*/true);
+  try {
+    await chrome.runtime.sendMessage({ type: 'clearLog' });
+    await chrome.runtime.sendMessage({ type: 'clearCapture' });
+    logEntries = [];
+    captureRing = [];
+    renderCaptureList();
+    refreshStatus();
+  } catch (e) {
+    alert('Clear failed: ' + e.message);
   }
-  container.scrollTop = container.scrollHeight;
-}
+});
 
-function appendLogEntry(entry, skipScroll = false) {
-  const container = $("log-container");
-  const div = document.createElement("div");
-  div.className = "log-entry " + (entry.level || "info");
+// ---------------------------------------------------------------------------
+// Filter dropdown
+// ---------------------------------------------------------------------------
 
-  // ISSUE-21 fix: previously built innerHTML with template literals that
-  // interpolated entry.commandId, entry.tabId, entry.durationMs WITHOUT
-  // escaping. A malicious bridge could inject HTML via a crafted commandId.
-  // Now we use DOM APIs (textContent / createElement) — no innerHTML, no
-  // possibility of XSS.
+captureFilterEl.addEventListener('change', () => {
+  captureFilter = captureFilterEl.value;
+  renderCaptureList();
+  scheduleSavePopupState();  // persist the selected filter
+});
 
-  const ts = document.createElement("span");
-  ts.className = "ts";
-  ts.textContent = new Date(entry.ts).toLocaleTimeString("en-US", { hour12: false });
+// ---------------------------------------------------------------------------
+// Toggles
+// ---------------------------------------------------------------------------
 
-  const level = document.createElement("span");
-  level.className = "level";
-  level.textContent = (entry.level || "info").toUpperCase();
-
-  const msgText = document.createElement("span");
-  msgText.textContent = (entry.message || "") + (
-    entry.data && Object.keys(entry.data).length > 0
-      ? " " + JSON.stringify(entry.data).slice(0, 200)
-      : ""
-  );
-
-  div.appendChild(ts);
-  div.appendChild(level);
-  div.appendChild(msgText);
-
-  if (entry.commandId) {
-    const cmdId = document.createElement("span");
-    cmdId.className = "cmd-id";
-    cmdId.textContent = `[${String(entry.commandId).slice(0, 8)}]`;
-    div.appendChild(cmdId);
+captureEnabledChk.addEventListener('change', async () => {
+  try {
+    await chrome.runtime.sendMessage({ type: 'setCaptureEnabled', enabled: captureEnabledChk.checked });
+  } catch (e) {
+    alert('Failed to toggle capture: ' + e.message);
+    captureEnabledChk.checked = !captureEnabledChk.checked;
   }
-  if (entry.tabId != null) {
-    const tabInfo = document.createElement("span");
-    tabInfo.style.color = "#666";
-    tabInfo.textContent = ` tab=${entry.tabId}`;
-    div.appendChild(tabInfo);
+});
+
+captureForwardWsChk.addEventListener('change', async () => {
+  try {
+    await chrome.runtime.sendMessage({ type: 'setCaptureForwardWs', enabled: captureForwardWsChk.checked });
+  } catch (e) {
+    alert('Failed to toggle WS forwarding: ' + e.message);
+    captureForwardWsChk.checked = !captureForwardWsChk.checked;
   }
-  if (entry.durationMs != null) {
-    const durInfo = document.createElement("span");
-    durInfo.style.color = "#666";
-    durInfo.textContent = ` ${entry.durationMs}ms`;
-    div.appendChild(durInfo);
+});
+
+// ---------------------------------------------------------------------------
+// Live updates: listen for 'status' messages that include capture stats.
+// (The 'capture-event' listener is already handled in the unified listener
+// above — no duplicate listener needed here.)
+// ---------------------------------------------------------------------------
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === 'status' && msg.status && msg.status.capture) {
+    renderCaptureStats(msg.status.capture);
+    // Sync checkbox state if the SW changed it (e.g., via WS command from backend)
+    if (typeof msg.status.capture.enabled === 'boolean' && msg.status.capture.enabled !== captureEnabledChk.checked) {
+      captureEnabledChk.checked = msg.status.capture.enabled;
+    }
+    if (typeof msg.status.capture.forwardWs === 'boolean' && msg.status.capture.forwardWs !== captureForwardWsChk.checked) {
+      captureForwardWsChk.checked = msg.status.capture.forwardWs;
+    }
+  }
+});
+
+// Initial render + start polling
+refreshCapture();
+setInterval(refreshCapture, 2000);
+
+// ---------------------------------------------------------------------------
+// Restore persisted popup state — runs LAST, after all `const` declarations
+// of the DOM elements we read from are in scope. This way the user's
+// in-progress macro edits / preset / filter survive popup close.
+// ---------------------------------------------------------------------------
+
+(async () => {
+  const persisted = await loadPopupState();
+  if (!persisted || Object.keys(persisted).length === 0) {
+    // First-time load — leave the defaults in place (already set above).
+    return;
   }
 
-  container.appendChild(div);
-
-  if (!skipScroll) {
-    container.scrollTop = container.scrollHeight;
+  // Restore the preset dropdown. If the user had a preset selected, load
+  // the corresponding macro JSON from the bundled file (so the macro
+  // textarea is populated). If the user had customized the macro JSON,
+  // we leave their customizations alone.
+  if (persisted.macroPreset && macroPresetSelect) {
+    macroPresetSelect.value = persisted.macroPreset;
+    // Trigger the change handler to load the preset's macro JSON, but only
+    // if the user hasn't customized the macro JSON (otherwise we'd overwrite
+    // their edits).
+    if (!persisted.macroJson) {
+      macroPresetSelect.dispatchEvent(new Event('change'));
+    }
   }
 
-  // Cap at 200 entries in the DOM
-  while (container.children.length > 200) {
-    container.removeChild(container.firstChild);
+  // Restore the inputs textarea (override the defaults we set earlier).
+  if (persisted.macroInputs && macroInputsTextarea) {
+    macroInputsTextarea.value = persisted.macroInputs;
   }
-}
 
-function escapeHtml(s) {
-  if (s == null) return "";
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
+  // Restore the macro JSON textarea (either user-customized or preset-loaded).
+  if (persisted.macroJson && macroJsonTextarea) {
+    macroJsonTextarea.value = persisted.macroJson;
+  }
+
+  // Restore the capture filter dropdown.
+  if (persisted.captureFilter && captureFilterEl) {
+    captureFilterEl.value = persisted.captureFilter;
+    captureFilter = persisted.captureFilter;
+    renderCaptureList();  // re-render with the restored filter
+  }
+})();
+

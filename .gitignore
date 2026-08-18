@@ -32,3 +32,10 @@ Thumbs.db
 # Build artifacts
 dist/
 build/
+
+# Secrets — never commit
+.env
+.env.local
+secrets.json
+*turso*token*
+*.secret

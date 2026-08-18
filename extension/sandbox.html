@@ -1,64 +1,36 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="utf-8" />
-  <title>Bridge Sandbox (zstd-native fetcher)</title>
-  <style>
-    body {
-      width: 480px;
-      min-height: 320px;
-      margin: 0;
-      padding: 16px;
-      background: #1a1a1a;
-      color: #e0e0e0;
-      font-family: -apple-system, system-ui, sans-serif;
-      font-size: 13px;
-    }
-    h1 { font-size: 14px; margin: 0 0 8px; font-weight: 600; }
-    .status {
-      display: flex; align-items: center; gap: 8px;
-      padding: 8px; background: #2a2a2a; border-radius: 4px; margin-bottom: 12px;
-    }
-    .dot { width: 8px; height: 8px; border-radius: 50%; background: #888; }
-    .dot.connected { background: #4caf50; }
-    .dot.connecting { background: #ff9800; animation: pulse 1s infinite; }
-    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:0.4;} }
-    .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
-    .stat { background: #2a2a2a; padding: 8px; border-radius: 4px; text-align: center; }
-    .stat-value { font-size: 18px; font-weight: 600; }
-    .stat-label { font-size: 10px; color: #888; text-transform: uppercase; }
-    .log {
-      background: #0d0d0d; color: #d4d4d4; padding: 8px; border-radius: 4px;
-      height: 140px; overflow-y: auto; font-family: monospace; font-size: 10px;
-    }
-    .log-entry { margin-bottom: 2px; word-break: break-all; }
-    .log-entry.warn { color: #ffa657; }
-    .log-entry.error { color: #ff7b72; }
-    .info { color: #888; font-size: 11px; margin-top: 8px; }
-  </style>
+<meta charset="UTF-8">
+<title>Notion Bridge Sandbox</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }
+h1 { font-size: 16px; color: #4285f4; margin-bottom: 12px; }
+.status { padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 13px; }
+.status.connected { background: #1b4332; color: #52b788; }
+.status.disconnected { background: #4a1e1e; color: #e76f51; }
+.stats { display: flex; gap: 12px; margin-bottom: 12px; }
+.stat { background: #16213e; padding: 8px 14px; border-radius: 6px; font-size: 12px; }
+.stat-label { color: #888; font-size: 10px; text-transform: uppercase; }
+.stat-value { font-size: 18px; font-weight: 600; }
+.log { background: #0f0f23; padding: 10px; border-radius: 6px; font-family: monospace; font-size: 11px; max-height: 300px; overflow-y: auto; line-height: 1.5; }
+.log-entry { color: #aaa; }
+.log-entry.info { color: #64b5f6; }
+.log-entry.warn { color: #ffb74d; }
+.log-entry.error { color: #ef5350; }
+.log-entry.success { color: #66bb6a; }
+</style>
 </head>
 <body>
-  <h1>Bridge Sandbox</h1>
-  <div class="status">
-    <div class="dot" id="dot"></div>
-    <span id="status">disconnected</span>
-  </div>
-  <div class="stats">
-    <div class="stat">
-      <div class="stat-value" id="fetched">0</div>
-      <div class="stat-label">Fetched</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value" id="bytes">0</div>
-      <div class="stat-label">Bytes</div>
-    </div>
-    <div class="stat">
-      <div class="stat-value" id="errors">0</div>
-      <div class="stat-label">Errors</div>
-    </div>
-  </div>
-  <div class="log" id="log"></div>
-  <div class="info">Page-context fetcher — handles zstd natively. Receives <code>sandbox.fetch</code> commands only.</div>
-  <script type="module" src="sandbox.js"></script>
+<h1>🔒 Notion Bridge Sandbox — Page Context (zstd-native)</h1>
+<div class="status disconnected" id="status">Disconnected</div>
+<div class="stats">
+  <div class="stat"><div class="stat-label">Fetched</div><div class="stat-value" id="fetched">0</div></div>
+  <div class="stat"><div class="stat-label">Total bytes</div><div class="stat-value" id="bytes">0</div></div>
+  <div class="stat"><div class="stat-label">Errors</div><div class="stat-value" id="errors">0</div></div>
+</div>
+<div class="log" id="log"></div>
+<script src="sandbox.js"></script>
 </body>
 </html>

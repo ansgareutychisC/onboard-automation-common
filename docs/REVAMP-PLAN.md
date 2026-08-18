@@ -123,20 +123,22 @@ Alternative (simpler): the popup just runs N macros in sequence. The "playlist" 
 
 This is the user's #1 concern. Current state: hardcoded in 4 places, regex broke when Notion changed the format, "LLM escape hatch" is a TODO.
 
-**Fix:** lift the regex into a macro input. The extraction logic lives in ONE eval function in ONE macro file. The function implements multi-layer extraction with a documented (not yet implemented) LLM escape hatch.
+**Fix:** the extraction logic is just an `eval` step in the macro. Each service's macro defines its own extraction JS — notion's knows Notion's format, supabase's knows supabase's, todoist's knows todoist's. No generic multi-layer regex baked into the extension — the extension just runs whatever JS the macro provides via the existing `eval` cmd (CDP `Runtime.evaluate` in a tab's main world, MV3-safe).
+
+**Per-domain email worker:** each custom domain has its own email worker (we don't always use `privatimail.com`). The email worker URL is a macro input — configured per-service, per-domain. The popup's config panel lets the user set the default; individual macros can override.
 
 **Macro: `extension/macros/_shared/wait-for-verification-email.json`**
 
 ```jsonc
 {
   "name": "Wait for verification email",
-  "description": "Polls the email worker for a verification code/link. Service-agnostic — the regex is an input. Multi-layer extraction with fallbacks.",
+  "description": "Polls the email worker for a verification code/link. Service-agnostic — the extraction logic is an eval step the calling macro overrides. The email worker URL is an input (each custom domain has its own worker).",
   "inputs": {
-    "emailWorkerUrl": "",      // popup pre-fills from chrome.storage.local
-    "emailWorkerToken": "",   // popup pre-fills from chrome.storage.local
+    "emailWorkerUrl": "",      // popup pre-fills from chrome.storage.local; each domain has its own worker
+    "emailWorkerToken": "",   // popup pre-fills
     "address": "",            // the email address to poll
-    "regex": "(?:login code|verification code|temporary code|passcode)[^0-9A-Za-z]{0,30}([0-9A-Za-z]{4,8})",
-    "subjectFilter": "verify|verification|code",
+    "extractionJs": "",       // the JS function body that extracts the code from the email body — per-service
+    "subjectFilter": "",      // optional regex to filter emails by subject
     "pollIntervalMs": 3000,
     "timeoutMs": 180000,
     "sinceMs": 0              // only consider emails received after this timestamp
@@ -159,10 +161,9 @@ This is the user's #1 concern. Current state: hardcoded in 4 places, regex broke
         {
           "id": "extract-code",
           "cmd": "eval",
-          "function": "(args) => { ... see below ... }",
+          "function": "{{inputs.extractionJs}}",
           "args": {
             "body": "{{fetch-emails.body}}",
-            "regex": "{{inputs.regex}}",
             "subjectFilter": "{{inputs.subjectFilter}}",
             "sinceMs": "{{inputs.sinceMs}}"
           }
@@ -173,63 +174,44 @@ This is the user's #1 concern. Current state: hardcoded in 4 places, regex broke
 }
 ```
 
-**The `extract-code` eval function implements the multi-layer strategy:**
+**The `extractionJs` is provided by the calling service's macro** — it's a function body like:
 
 ```js
+// Notion's extraction (lives in macros/notion/signup.json as an input override)
 (args) => {
-  const data = JSON.parse(args.body);
-  const emails = data.results || [];
-  const sinceMs = args.sinceMs || 0;
-  const userRegex = args.regex ? new RegExp(args.regex, 'i') : null;
-  const subjectFilter = args.subjectFilter ? new RegExp(args.subjectFilter, 'i') : null;
-
-  // Layer 1: user-provided regex against email bodies (newest first)
+  const emails = JSON.parse(args.body).results || [];
   for (const em of emails.reverse()) {
-    // Skip emails before sinceMs
-    const emMs = Date.parse(em.date || em.created_at || em.received_at || 0) || 0;
-    if (sinceMs && emMs < sinceMs) continue;
-    // Skip emails not matching subject filter
-    if (subjectFilter && !subjectFilter.test(em.subject || '')) continue;
+    const emMs = Date.parse(em.date || em.created_at || 0) || 0;
+    if (args.sinceMs && emMs < args.sinceMs) continue;
     const text = (em.text_body || '') + '\n' + (em.html_body || '');
-    if (userRegex) {
-      const m = text.match(userRegex);
-      if (m && m[1]) return { code: m[1], source: 'user-regex', emailId: em.id };
-    }
+    // Notion changed from 6-digit to 6-char alphanumeric — use the new pattern
+    const m = text.match(/(?:login code|verification code|temporary code|passcode)[^0-9A-Za-z]{0,30}([0-9A-Za-z]{6})/i);
+    if (m && m[1]) return { code: m[1], source: 'notion-contextual', emailId: em.id };
   }
+  return { code: null, source: 'not-found', emailCount: emails.length };
+}
+```
 
-  // Layer 2: contextual keyword + 4-8 char alphanumeric (Notion's current format)
-  for (const em of emails) {
-    if (subjectFilter && !subjectFilter.test(em.subject || '')) continue;
+```js
+// Todoist's extraction (lives in macros/todoist/signup.json — different format, different regex)
+(args) => {
+  const emails = JSON.parse(args.body).results || [];
+  for (const em of emails.reverse()) {
     const text = (em.text_body || '') + '\n' + (em.html_body || '');
-    const m = text.match(/(?:login code|verification code|temporary code|passcode|login\s+link)[^0-9A-Za-z]{0,30}([0-9A-Za-z]{4,8})/i);
-    if (m && m[1]) return { code: m[1], source: 'contextual-keyword', emailId: em.id };
+    // Todoist uses a UUID email_token in a verify link
+    const m = text.match(/https:\/\/app\.todoist\.com\/api\/v\d+(?:\.\d+)?\/verify_email\?email_token=([0-9a-fA-F-]{36})/i);
+    if (m && m[1]) return { code: m[1], source: 'todoist-verify-link', emailId: em.id };
   }
-
-  // Layer 3: bare 4-8 char alphanumeric (last resort — high false positive risk)
-  for (const em of emails) {
-    if (subjectFilter && !subjectFilter.test(em.subject || '')) continue;
-    const text = (em.text_body || '') + '\n' + (em.html_body || '');
-    const m = text.match(/\b([0-9A-Za-z]{4,8})\b/);
-    if (m && m[1]) return { code: m[1], source: 'bare-pattern', emailId: em.id };
-  }
-
-  // Layer 4 (TODO, not implemented): LLM escape hatch
-  // If a configurable LLM endpoint is set, send the email body to it with
-  // a prompt like "extract the verification code from this email". This is
-  // the documented escape hatch for when Notion changes the format AGAIN
-  // and we can't update the regex in time.
-  // return { code: await callLLM(emails), source: 'llm' };
-
   return { code: null, source: 'not-found', emailCount: emails.length };
 }
 ```
 
 **Why this fixes the user's pain:**
-- The regex is a macro input. Changing it doesn't require editing extension code.
-- The popup can show the regex field with a sensible default, and the user can override it when a service changes its email template.
-- The multi-layer fallback means even if the user-provided regex fails, the contextual-keyword layer often catches it.
-- The LLM escape hatch is a documented future option — not a TODO buried in a Python file, but a visible Layer 4 in the macro itself.
-- This macro is reusable across notion, supabase, todoist — they all poll the same email worker, just with different regexes.
+- The extraction logic is per-service, per-macro — notion's regex lives in `macros/notion/signup.json`, todoist's lives in `macros/todoist/signup.json`. When Notion changes the format, you edit ONE JSON file. No extension code changes.
+- The extension just provides the `eval` primitive (already exists) — no service-specific extraction logic baked in.
+- Each custom domain's email worker URL is a popup config field + macro input — no hardcoded `privatimail.com`.
+- If a service's email format is too complex for a single regex, the `extractionJs` can be arbitrarily complex JS — full DOM parsing, multi-layer fallback, even fetch additional URLs. Whatever the macro author writes, the extension runs.
+- A micro-service for email parsing is overkill — the extension is already a JS runtime. We just use it.
 
 ## 6. Implementation plan — next session
 
@@ -427,14 +409,14 @@ onboard-automation-common/
 | Turso token leaks | Stored in `chrome.storage.local` (encrypted at rest by Chrome). Token is scoped to the Turso DB only. |
 | No backend means no orchestration across multiple extensions | Acceptable for MVP. Phase 2 adds the `command_queue` table in Turso for orchestration. |
 
-## 10. Open questions for the user
+## 10. Open questions for the user — ANSWERED
 
-1. **Turso account** — do you have one, or should I document the setup steps? (Free tier: 9GB, 1B row reads/month — plenty for this use case.)
-2. **Repo structure** — keep the existing `onboard-automation-common/` repo, create a `v2/` subdir, or new repo? My recommendation: keep the repo, put the new extension under `extension-v2/`, the dev daemon under `python-dev-daemon/`, move the old untested chassis to `docs/v1-design/`.
-3. **Email worker** — you mentioned "custom domain and the email service itself need to be configurable." Is the email worker at `mail-api.privatimail.com` still the one to use, or are you considering a different one? (The macro chunk supports any HTTP-based email worker with the same API shape.)
-4. **Code regex default** — should the default regex be the Notion 6-char alphanumeric pattern, or a more general "any 4-8 char alphanumeric near a keyword"? (I lean toward the latter — more robust to format changes.)
-5. **WS scope confirmed** — you've confirmed WS stays for the Python dev daemon (local only, agent-driven interactive debugging). The CF Worker has no WS. The extension gates WS on `devUrl`. Anything else to adjust here?
-6. **Should we start Phase 1 in the next session, or do you want to finish notion v0.7 stabilization first?** The plan forks notion v0.7's extension AS-IS at commit `129dc11` — if there are more fixes coming, we fork after those land.
+1. **Turso account** — ✅ User provided a token. The token is NOT committed to git (it's a JWT granting account access). It will be configured via the popup's config panel and stored in `chrome.storage.local`. For automated testing, a `.env` file (gitignored) can hold it.
+2. **Repo structure** — ✅ "Keep current, just update in place, no one uses anything here, replace with whatever it should be." So: delete the v1 `extension/`, `worker-template/`, `python-template/`, and v1 docs in-place. Fork notion v0.7's extension into the same `extension/` path. No `docs/v1-design/` reference folder — the v1 chassis is just gone.
+3. **Email worker** — ✅ "Each custom domain has its own worker, we don't always just use privatimail.com." The email worker URL is a per-macro input + a popup config field. No hardcoded `privatimail.com` anywhere.
+4. **Code regex pattern** — ✅ "Keep it flexible. WE DON'T KNOW WHAT THE NEXT SERVICE USES! Once we know we write that regex which should be part of that macro definition. One of the action should support this extraction. Ideally we can run eval and js so we can do anything on extension side for these email processing, almost like what the backend is doing for the email processing we just do it directly inside extension." → The extraction logic is an `eval` step in each service's macro. No generic multi-layer regex baked into the extension. The extension just provides the `eval` primitive (already exists via CDP `Runtime.evaluate`).
+5. **WS scope** — ✅ Confirmed: WS stays for Python dev daemon (local only). CF Worker is HTTP-only. Extension gates WS on `devUrl`.
+6. **Start** — ✅ "Start this, keep notion as the first tenant, but then supabase, todoist, and we will onboard more, so keep your kit generalized." → Begin Phase 1 implementation now. Notion is the first service to verify; the kit must remain generalized for supabase, todoist, and future services.
 
 ## 11. Next session kickoff checklist
 

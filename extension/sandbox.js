@@ -1,220 +1,160 @@
-// extension/sandbox.js
-//
-// Standalone page that runs in a full Chrome tab (not the service worker).
-// Connects to the same bridge server as background.js but identifies itself
-// with context:"page" so the server can route sandbox.fetch commands here
-// (NOT to the background SW).
-//
-// Why this exists: Chrome's MV3 service worker fetch().text() cannot reliably
-// decompress zstd responses (broken in Chrome 151+). The page-context fetch
-// pipeline handles zstd natively via Chrome's network stack.
-//
-// Server URL is read from ?server= query param (passed by sandbox.open
-// handler). If absent, falls back to chrome.storage.local["serverUrl"].
+/**
+ * Notion Bridge Sandbox — Page Context (zstd-native)
+ *
+ * Connects to the bridge via WebSocket. The sandbox page runs in a full
+ * Chrome page context where Chrome's network stack handles zstd natively.
+ */
 
-import { MSG, PROTOCOL_VERSION, CONTEXT, buildCapabilities } from "./lib/protocol.js";
-import { buildWsUrl } from "./lib/url.js";
-
-const KEEPALIVE_INTERVAL_MS = 25_000;
-const RECONNECT_DELAY_MS = 5_000;
-
-const stats = { fetched: 0, bytes: 0, errors: 0 };
-const logEntries = [];
 let ws = null;
-let reconnectTimer = null;
-let keepaliveTimer = null;
-// ISSUE-14 fix: previously hardcoded to "sandbox-page". Now unique per
-// instance (crypto.randomUUID) so multiple browser profiles connecting to
-// the same bridge don't share an agentId in logs/status.
-let agentId = "sandbox-" + crypto.randomUUID();
+let keepalive = null;
+const stats = { fetched: 0, bytes: 0, errors: 0 };
 
-function log(level, message, data = {}) {
-  const entry = { ts: Date.now(), level, message, data, agentId };
-  logEntries.push(entry);
-  if (logEntries.length > 100) logEntries.shift();
-  render();
-  // Also send to server (best-effort)
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    try { ws.send(JSON.stringify({ type: MSG.LOG, ...entry })); } catch {}
-  }
+function log(level, msg, data) {
+    const entry = document.createElement('div');
+    entry.className = 'log-entry ' + (level || 'info');
+    const time = new Date().toISOString().split('T')[1].split('.')[0];
+    entry.textContent = `[${time}] ${msg}${data ? ' ' + JSON.stringify(data) : ''}`;
+    const logEl = document.getElementById('log');
+    logEl.appendChild(entry);
+    logEl.scrollTop = logEl.scrollHeight;
+    while (logEl.children.length > 100) logEl.removeChild(logEl.firstChild);
 }
 
-async function getServerUrl() {
-  // ISSUE-13 fix: prefer ?server= query param (set by sandbox.open handler).
-  // Fall back to chrome.storage.local["serverUrl"] (same as background SW).
-  const params = new URLSearchParams(location.search);
-  const fromParam = params.get("server");
-  if (fromParam) return fromParam;
-
-  return new Promise((resolve) => {
-    chrome.storage.local.get("serverUrl", (cfg) => {
-      resolve(cfg.serverUrl || "");
-    });
-  });
+function updateStatus(connected) {
+    const el = document.getElementById('status');
+    el.className = 'status ' + (connected ? 'connected' : 'disconnected');
+    el.textContent = connected ? '✓ Connected to bridge' : '✗ Disconnected — will retry in 5s';
 }
 
-// ISSUE-14 fix: read auth token from ?token= query param (set by sandbox.open)
-// or from chrome.storage.local. Previously hardcoded to "" — failed against
-// an authenticated bridge.
-async function getAuthToken() {
-  const params = new URLSearchParams(location.search);
-  const fromParam = params.get("token");
-  if (fromParam) return fromParam;
-  return new Promise((resolve) => {
-    chrome.storage.local.get("authToken", (cfg) => {
-      resolve(cfg.authToken || "");
-    });
-  });
+function updateStats() {
+    document.getElementById('fetched').textContent = stats.fetched;
+    document.getElementById('bytes').textContent = (stats.bytes / 1024).toFixed(1) + 'K';
+    document.getElementById('errors').textContent = stats.errors;
 }
 
-// ISSUE-R2-4 fix: use the shared buildWsUrl from lib/url.js (was duplicated
-// here with the buggy unconditional XTransformPort logic). Now consistent
-// with connection.js — only appends XTransformPort for .space-z.ai hosts.
+function getBridgeUrl() {
+    // Check URL query param first: ?server=ws://host:port
+    const params = new URLSearchParams(location.search);
+    const fromParam = params.get('server');
+    if (fromParam) return fromParam;
 
-async function connect() {
-  const serverUrl = await getServerUrl();
-  const authToken = await getAuthToken();
-  if (!serverUrl) {
-    log("error", "no-server-url", { hint: "Open via sandbox.open command or set serverUrl in popup" });
-    return;
-  }
+    // Default: use the public preview URL (same as the extension service worker)
+    return 'wss://preview-chat-672657de-8fc2-47b1-8770-916464a90553.space-z.ai/?XTransformPort=8787';
+}
 
-  const wsUrl = buildWsUrl(serverUrl);
-  log("info", "connecting", { wsUrl });
-  setStatus("connecting");
+function connect() {
+    const url = getBridgeUrl();
+    log('info', 'Connecting to ' + url);
+    updateStatus(false);
 
-  try {
-    ws = new WebSocket(wsUrl);
-  } catch (err) {
-    log("error", "ws-construct-failed", { error: String(err) });
-    scheduleReconnect();
-    return;
-  }
-
-  ws.onopen = () => {
-    setStatus("connected");
-    log("info", "ws-open", {});
-    // Identify as sandbox page — context:"page" tells the server to route
-    // sandbox.fetch commands here, NOT to the background SW.
-    // ISSUE-14 fix: send the actual auth token (was hardcoded "").
-    ws.send(JSON.stringify({ type: MSG.AUTH, token: authToken || "" }));
-    ws.send(JSON.stringify({
-      type: MSG.CONNECT,
-      agentId,
-      protocolVersion: PROTOCOL_VERSION,
-      capabilities: ["sandbox.fetch", "ping"],
-      context: CONTEXT.PAGE,
-      userAgent: navigator.userAgent,
-      hostname: "sandbox-page",
-    }));
-    keepaliveTimer = setInterval(() => {
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: MSG.PONG, ts: Date.now() }));
-      }
-    }, KEEPALIVE_INTERVAL_MS);
-  };
-
-  ws.onmessage = async (event) => {
-    let msg;
-    try { msg = JSON.parse(event.data); } catch { return; }
-
-    if (msg.type === "ping") {
-      ws.send(JSON.stringify({ type: MSG.PONG, ts: Date.now() }));
-      return;
+    try {
+        ws = new WebSocket(url);
+    } catch (e) {
+        log('error', 'WebSocket failed: ' + e.message);
+        setTimeout(connect, 5000);
+        return;
     }
 
-    if (msg.type === "sandbox.fetch") {
-      await handleSandboxFetch(msg);
-    }
-  };
-
-  ws.onerror = () => {
-    log("warn", "ws-error", {});
-  };
-
-  ws.onclose = (event) => {
-    log("info", "ws-close", { code: event.code });
-    if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
-    ws = null;
-    setStatus("disconnected");
-    if (event.code !== 1000) scheduleReconnect();
-  };
-}
-
-function scheduleReconnect() {
-  if (reconnectTimer) clearTimeout(reconnectTimer);
-  reconnectTimer = setTimeout(() => connect(), RECONNECT_DELAY_MS);
-}
-
-async function handleSandboxFetch(msg) {
-  const { id, url, method = "GET", headers = {}, body = null, credentials = "include", timeoutMs = 120_000 } = msg;
-  const startedAt = Date.now();
-  try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const opts = { method, headers, credentials, signal: controller.signal };
-    if (body && !["GET", "HEAD"].includes(method.toUpperCase())) opts.body = body;
-    const res = await fetch(url, opts);
-    const text = await res.text();
-    clearTimeout(timer);
-
-    const respHeaders = {};
-    res.headers.forEach((v, k) => { respHeaders[k] = v; });
-
-    stats.fetched++;
-    stats.bytes += text.length;
-    render();
-
-    log("info", "fetch-done", { url, status: res.status, bodyLen: text.length, encoding: respHeaders["content-encoding"] || "" });
-
-    const result = {
-      type: MSG.RESULT, id, ok: true,
-      status: res.status,
-      statusText: res.statusText,
-      body: text,
-      headers: respHeaders,
-      finalUrl: res.url,
-      contentEncoding: respHeaders["content-encoding"] || "",
-      bodyLen: text.length,
-      durationMs: Date.now() - startedAt,
+    ws.onopen = () => {
+        log('success', 'Connected to bridge');
+        updateStatus(true);
+        ws.send(JSON.stringify({
+            type: 'connect',
+            agentId: 'sandbox-page',
+            userAgent: navigator.userAgent,
+            hostname: 'sandbox-page',
+            context: 'page',
+        }));
+        keepalive = setInterval(() => {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+            }
+        }, 25000);
     };
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(result));
-    }
-  } catch (err) {
-    stats.errors++;
-    render();
-    log("error", "fetch-failed", { id, url, error: String(err) });
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        type: MSG.RESULT, id, ok: false,
-        error: `sandbox.fetch failed: ${err.message ?? err}`,
-        durationMs: Date.now() - startedAt,
-      }));
-    }
-  }
+
+    ws.onmessage = async (event) => {
+        let msg;
+        try { msg = JSON.parse(event.data); } catch (e) { return; }
+
+        if (msg.type === 'ping') {
+            ws.send(JSON.stringify({ type: 'pong', ts: Date.now() }));
+            return;
+        }
+
+        if (msg.type === 'sandbox.fetch') {
+            await handleFetch(msg);
+        }
+    };
+
+    ws.onerror = () => {
+        log('error', 'WebSocket error');
+    };
+
+    ws.onclose = () => {
+        updateStatus(false);
+        if (keepalive) { clearInterval(keepalive); keepalive = null; }
+        setTimeout(connect, 5000);
+    };
 }
 
-function setStatus(s) {
-  document.getElementById("status").textContent = s;
-  const dot = document.getElementById("dot");
-  dot.className = "dot " + s;
-}
+async function handleFetch(cmd) {
+    const { id, url, method, headers, body, credentials, timeoutMs } = cmd;
+    log('info', `→ ${method || 'GET'} ${url.slice(0, 80)}`);
 
-function render() {
-  document.getElementById("fetched").textContent = stats.fetched;
-  document.getElementById("bytes").textContent = stats.bytes;
-  document.getElementById("errors").textContent = stats.errors;
-  const logEl = document.getElementById("log");
-  logEl.innerHTML = "";
-  for (const e of logEntries.slice(-50)) {
-    const div = document.createElement("div");
-    div.className = "log-entry " + (e.level || "info");
-    const ts = new Date(e.ts).toLocaleTimeString("en-US", { hour12: false });
-    div.textContent = `${ts} ${e.level.toUpperCase()} ${e.message}` + (e.data && Object.keys(e.data).length ? " " + JSON.stringify(e.data) : "");
-    logEl.appendChild(div);
-  }
-  logEl.scrollTop = logEl.scrollHeight;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs || 120000);
+
+    try {
+        const options = {
+            method: method || 'GET',
+            headers: headers || {},
+            credentials: credentials || 'include',
+            signal: controller.signal,
+        };
+        if (body && method !== 'GET' && method !== 'HEAD') {
+            options.body = body;
+        }
+
+        // KEY: This is a PAGE context. Chrome's network stack handles
+        // zstd/gzip/deflate decompression natively. res.text() returns
+        // the FULL decompressed response.
+        const res = await fetch(url, options);
+        const text = await res.text();
+
+        const responseHeaders = {};
+        res.headers.forEach((value, key) => {
+            responseHeaders[key] = value;
+        });
+
+        stats.fetched++;
+        stats.bytes += text.length;
+        updateStats();
+
+        log('success', `← ${res.status} ${text.length} bytes (encoding: ${responseHeaders['content-encoding'] || 'none'})`);
+
+        ws.send(JSON.stringify({
+            type: 'result',
+            id,
+            ok: res.ok,
+            status: res.status,
+            statusText: res.statusText,
+            body: text,
+            finalUrl: res.url,
+            headers: responseHeaders,
+        }));
+    } catch (err) {
+        stats.errors++;
+        updateStats();
+        log('error', `✗ ${err.message}`);
+        ws.send(JSON.stringify({
+            type: 'result',
+            id,
+            ok: false,
+            error: err.message,
+        }));
+    } finally {
+        clearTimeout(timer);
+    }
 }
 
 connect();

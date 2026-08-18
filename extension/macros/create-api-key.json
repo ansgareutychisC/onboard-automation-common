@@ -1,0 +1,79 @@
+{
+  "name": "create-api-key",
+  "description": "Create a Personal Access Token (PAT) for an existing workspace. Requires an active Notion session (token_v2 cookie). This is the simplest macro — good for testing the macro replay system. Matches HAR Phase K (getApiToken.har).",
+  "inputs": {
+    "spaceId": "YOUR_SPACE_ID_HERE",
+    "integrationName": "automation-pat",
+    "expiration": "1_year"
+  },
+  "steps": [
+    {
+      "id": "check-session",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/getSpacesInitial",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "verify-session",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); if (d && d.users) return { ok: true, hasSession: true }; return { ok: false, hasSession: false, body: args.body.slice(0, 200) }; } catch(e) { return { ok: false, error: e.message }; } }",
+      "args": { "body": "{{check-session.body}}" }
+    },
+    {
+      "id": "get-capability-options",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/getPersonalAccessTokenCapabilityOptions",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{inputs.spaceId}}" },
+      "body": "{\"spaceId\":\"{{inputs.spaceId}}\"}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "create-integration",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/createDeveloperPersonalIntegration",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{inputs.spaceId}}" },
+      "body": "{\"name\":\"{{inputs.integrationName}}\",\"spaceId\":\"{{inputs.spaceId}}\",\"capabilities\":{\"notionApi\":true,\"manageWorkers\":true},\"expiration\":\"{{inputs.expiration}}\"}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "parse-bot-id",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); const botId = d.pointer && d.pointer.id; if (!botId) return { ok: false, error: 'No botId in response', body: args.body.slice(0, 300) }; return { ok: true, botId, expiresAt: d.expiresAt }; } catch(e) { return { ok: false, error: e.message }; } }",
+      "args": { "body": "{{create-integration.body}}" }
+    },
+    {
+      "id": "get-bot-token",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/getBotToken",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{inputs.spaceId}}" },
+      "body": "{\"botId\":\"{{parse-bot-id.botId}}\"}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "parse-token",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); if (!d.token) return { ok: false, error: 'No token in response', body: args.body.slice(0, 300) }; return { ok: true, token: d.token }; } catch(e) { return { ok: false, error: e.message }; } }",
+      "args": { "body": "{{get-bot-token.body}}" }
+    },
+    {
+      "id": "log-result",
+      "cmd": "log",
+      "message": "API key created!",
+      "data": {
+        "token": "{{parse-token.token}}",
+        "botId": "{{parse-bot-id.botId}}",
+        "expiresAt": "{{parse-bot-id.expiresAt}}"
+      }
+    }
+  ]
+}

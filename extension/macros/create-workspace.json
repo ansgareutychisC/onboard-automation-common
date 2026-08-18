@@ -1,0 +1,86 @@
+{
+  "name": "create-workspace",
+  "description": "Create a new workspace on an EXISTING account (already logged in). Requires an active Notion session (token_v2 cookie). Matches the createWorkspace.har flow — creates a space + space_view. Does NOT do signup or onboarding completion (the account is already onboarded).",
+  "inputs": {
+    "workspaceName": "New Workspace",
+    "workspaceIcon": "🚀",
+    "planType": "personal"
+  },
+  "steps": [
+    {
+      "id": "check-session",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/getSpacesInitial",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "extract-user-id",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); const users = d.users || {}; const userId = Object.keys(users)[0] || ''; if (!userId) return { ok: false, error: 'No user found — are you logged in?' }; return { ok: true, userId }; } catch(e) { return { ok: false, error: e.message }; } }",
+      "args": { "body": "{{check-session.body}}" }
+    },
+    {
+      "id": "get-cookies",
+      "cmd": "cookies.getAll",
+      "url": "https://app.notion.com"
+    },
+    {
+      "id": "extract-device-id",
+      "cmd": "eval",
+      "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; const deviceId = map.notion_device_id || crypto.randomUUID(); return { ok: true, deviceId, source: map.notion_device_id ? 'cookie' : 'generated' }; }",
+      "args": { "cookies": "{{get-cookies.cookies}}" }
+    },
+    {
+      "id": "log-user",
+      "cmd": "log",
+      "message": "Found logged-in user",
+      "data": { "userId": "{{extract-user-id.userId}}", "deviceId": "{{extract-device-id.deviceId}}", "deviceIdSource": "{{extract-device-id.source}}" }
+    },
+    {
+      "id": "create-space",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/createSpace",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json" },
+      "body": "{\"name\":\"{{inputs.workspaceName}}\",\"icon\":\"{{inputs.workspaceIcon}}\",\"planType\":\"{{inputs.planType}}\",\"planSelection\":\"{{inputs.planType}}\",\"initialPersona\":\"unfilled\",\"domainType\":\"professional\",\"deviceId\":\"{{extract-device-id.deviceId}}\",\"deviceType\":\"web-desktop\",\"source\":\"sidebar_switcher\"}",
+      "credentials": "include",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "parse-space-id",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); if (!d.spaceId) return { ok: false, error: 'No spaceId', body: args.body.slice(0, 300) }; return { ok: true, spaceId: d.spaceId }; } catch(e) { return { ok: false, error: e.message }; } }",
+      "args": { "body": "{{create-space.body}}" }
+    },
+    {
+      "id": "gen-ids",
+      "cmd": "eval",
+      "function": "() => { return { spaceViewId: crypto.randomUUID(), requestId: crypto.randomUUID(), txId: crypto.randomUUID(), ts: Date.now() }; }",
+      "args": {}
+    },
+    {
+      "id": "create-space-view",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/saveTransactionsMain",
+      "method": "POST",
+      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{parse-space-id.spaceId}}" },
+      "body": "{\"requestId\":\"{{gen-ids.requestId}}\",\"transactions\":[{\"id\":\"{{gen-ids.txId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\",\"debug\":{\"userAction\":\"spaceActions.createSpace\",\"clientCommitTimeMs\":{{gen-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"space_view\",\"id\":\"{{gen-ids.spaceViewId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\"},\"path\":[],\"command\":\"set\",\"args\":{\"id\":\"{{gen-ids.spaceViewId}}\",\"version\":1,\"space_id\":\"{{parse-space-id.spaceId}}\",\"notify_mobile\":true,\"notify_desktop\":true,\"notify_email\":true,\"parent_id\":\"{{extract-user-id.userId}}\",\"parent_table\":\"user_root\",\"alive\":true,\"first_joined_space_time\":{{gen-ids.ts}},\"joined\":true,\"settings\":{\"notify_email_digest\":true,\"notify_home_digest_email\":true}}},{\"pointer\":{\"table\":\"user_root\",\"id\":\"{{extract-user-id.userId}}\"},\"path\":[\"space_views\"],\"command\":\"listAfter\",\"args\":{\"id\":\"{{gen-ids.spaceViewId}}\"}},{\"pointer\":{\"table\":\"user_root\",\"id\":\"{{extract-user-id.userId}}\"},\"path\":[\"space_view_pointers\"],\"command\":\"keyedObjectListAfter\",\"args\":{\"value\":{\"table\":\"space_view\",\"id\":\"{{gen-ids.spaceViewId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\"}}}]}]}",
+      "credentials": "include",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "final-result",
+      "cmd": "log",
+      "message": "🎉 Workspace created!",
+      "data": {
+        "spaceId": "{{parse-space-id.spaceId}}",
+        "spaceViewId": "{{gen-ids.spaceViewId}}",
+        "userId": "{{extract-user-id.userId}}"
+      }
+    }
+  ]
+}
