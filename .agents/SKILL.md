@@ -551,15 +551,42 @@ interesting events into fixtures (see §1.16).
 
 ### Zenrows (agent-side web access, evaluated 2026-08-25)
 
-See docs/ZENROWS-EVAL.md. Verdict: genuinely passes Notion's outer defenses
-via residential IP + real browser (a full signup email-submit completed with
-zero captcha once), but hCaptcha enterprise challenges probabilistically
-(1/3 passes) — not reliable enough to replace the extension as the primary
-driver, and each passed attempt sends a REAL code email (reputation cost).
-Use it as agent-side eyes (json_response XHR capture from real sessions) and
-a fallback driver. Does NOT fix the email-body problem: both Notion
-templates ("Your Notion signup code" / "Your temporary Notion login code")
-put the code in the BODY.
+See docs/ZENROWS-EVAL.md + docs/POST-LOGIN-TAIL.md. Verdict: genuinely passes
+Notion's outer defenses via residential IP + real browser (a full signup
+email-submit completed with zero captcha once), but hCaptcha enterprise
+challenges probabilistically (1/3 passes) — not reliable enough to replace
+the extension as the SIGNUP driver, and each passed attempt sends a REAL
+code email (reputation cost).
+
+**BUT post-login Zenrows is the backbone**: session replay (cookie
+forwarding via `custom_headers=true`) works for EVERY app-API call, and
+it is the ONLY route that activates the business trial — the "captcha" is
+IP-reputation-gated and never validated on a clean IP (empty `captchaToken`
+→ 200 `trialing`). The whole post-signup tail is now committed as
+`backend/notion_tail.py` (below) with `--route auto|direct|zenrows`.
+
+### Backend tail driver (`backend/notion_tail.py`, live-verified 2026-08-25)
+
+THE operator requirement: sign up once (extension) → save creds → resume
+the session at the backend forever, no browser, no re-login. Implemented
+as ONE idempotent CLI over the notion-ref library:
+
+- Session file per account (creds + space/view ids + onboardingCompleted
+  + trial + `ntn_*` apiKey + chat history), rewritten ATOMICALLY per step
+  (`backend/sessions/*` gitignored — live credentials).
+- Steps: `resume` (getSpaces + space discovery) → `workspace` (createSpace
+  + view + icon; `--new-workspace` adds more) → `onboarding` → `trial`
+  (Zenrows-only unblocker; `--route auto` demonstrates the fallback) →
+  `apikey` (PAT flow + public-API verify) → `chat` (live transcript shape,
+  NDJSON reply extraction, outcome check).
+- `ZenrowsSession` duck-types `requests.Session` (swapped in as
+  `client._session`) so the ENTIRE notion-ref library runs through Zenrows
+  unchanged. Gotchas baked in: `custom_headers=true` is a BOOLEAN;
+  `original_status=true`; **`Accept-Encoding: identity` is mandatory**
+  (Zenrows forwards gzip verbatim, urllib won't decompress → binary
+  garbage at HTTP 200).
+- Chat via Zenrows arrives buffered (no incremental streaming) but
+  parses fine after completion.
 
 ## 4. Environment + workflow notes for the next agent
 
@@ -740,6 +767,10 @@ onboard-automation-common/
 │   └── icons/                    ← placeholder PNGs
 ├── python-dev-daemon/
 │   └── bridge.py                 ← dev daemon: WS bridge + /api/command + status page
+├── backend/                      ← post-signup tail, backend-only (no extension needed)
+│   ├── notion_tail.py            ← THE resume-everything CLI (see §3 backend section)
+│   ├── notion_chat_config.json   ← captured live 59-key chat transcript config (drifts)
+│   └── sessions/                 ← per-account session files (gitignored, live creds)
 ├── tests/
 │   ├── test_macro_dryrun.js      ← dry-run all macros vs HAR fixtures + lint
 │   ├── test_email_extraction_live.js ← extractionJs vs live ImprovMX

@@ -1,0 +1,19 @@
+{
+ "email": "example@priv.email",
+ "userId": "00000000-0000-0000-0000-000000000000",
+ "deviceId": "00000000-0000-0000-0000-000000000001",
+ "tokenV2": "v03%3AEXAMPLE_REPLACE_ME",
+ "clientVersion": "23.13.20260824.2240",
+ "createdAt": 0,
+ "space": {
+  "id": "00000000-0000-0000-0000-000000000002",
+  "viewId": "00000000-0000-0000-0000-000000000003",
+  "name": "Onboard Workspace",
+  "icon": "🚀"
+ },
+ "spaces": [],
+ "onboardingCompleted": true,
+ "trial": {"tier": "business", "status": "trialing"},
+ "apiKey": {"token": "ntn_EXAMPLE", "botId": "", "expiresAt": 0, "name": "automation-pat"},
+ "chats": []
+}

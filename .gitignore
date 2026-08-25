@@ -46,3 +46,7 @@ tests/.tmp-chrome-profile/
 # Dev daemon local state
 python-dev-daemon/bridge.db
 python-dev-daemon/bridge.db-journal
+
+# Backend session files (contain live credentials — never commit)
+backend/sessions/*
+!backend/sessions/example.json

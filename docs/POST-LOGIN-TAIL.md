@@ -171,3 +171,65 @@ by just asking the chat agent to create it, which works.
 - `/home/z/my-project/scripts/live_tail.py`, `live_tail2.py` — the
   workspace-creation tail runs (incl. the NDJSON fix)
 - `/tmp/gt_chat.json` — the raw captured chat request (ground truth)
+
+## The backend driver — `backend/notion_tail.py` (IMPLEMENTED, live-verified)
+
+Everything above was adhoc scripts; it is now ONE committed, idempotent
+driver. "The dream": sign up once through the extension, save the creds,
+resume the session at the backend forever after — no browser, no re-login.
+
+```
+# bootstrap a session file from the signup creds dump (once per account)
+python3 backend/notion_tail.py --session backend/sessions/acct.json \
+    --init-from-creds /tmp/fresh_creds.json
+
+# the whole tail (idempotent — every step skips work already done)
+python3 backend/notion_tail.py --session backend/sessions/acct.json
+
+# single steps / custom bits
+python3 backend/notion_tail.py --session ... --step trial          # via Zenrows
+python3 backend/notion_tail.py --session ... --step chat --prompt "hi"
+python3 backend/notion_tail.py --session ... --route zenrows --step chat
+python3 backend/notion_tail.py --session ... --new-workspace --workspace-name X
+python3 backend/notion_tail.py --session ... --refresh-config /tmp/gt_chat.json
+```
+
+The session file is rewritten atomically after every step (crash-safe
+resume) and holds the FULL account state: creds, space/view ids,
+onboardingCompleted, trial, the `ntn_*` API key, and the chat history
+with thread ids. `backend/sessions/*` is gitignored (live credentials).
+
+**Verified routing matrix (2026-08-25, fresh account):**
+
+| Step | direct (sandbox IP) | via Zenrows |
+|---|---|---|
+| resume / getSpaces | OK | OK |
+| workspace (createSpace + view + icon) | OK | OK (2nd space created) |
+| onboarding screens | OK | transport-proven (same saveTransactions path) |
+| **biz trial (updateSubscription)** | **400 "Trial activation is not allowed"** | **OK — the unblocker** |
+| API key (PAT flow) | OK | OK (created + public-API verified) |
+| AI chat (runInferenceTranscript) | OK (streams) | OK (buffered NDJSON, reply extracted) |
+
+`--route auto` (default) tries direct and retries the SAME call through
+Zenrows on IP-reputation blocks (400 UserValidationError / 403) — the
+trial step demonstrates this fallback live.
+
+Transport: `ZenrowsSession` duck-types `requests.Session`, so the whole
+notion-ref library runs through Zenrows unchanged (`client._session` is
+swapped after construction). Zenrows gotchas baked in:
+
+- `custom_headers=true` is a **boolean** (2026 API change); headers ride
+  on the `api.zenrows.com` request itself.
+- `original_status=true` propagates the target's real HTTP status.
+- **`Accept-Encoding: identity` is MANDATORY** — Zenrows forwards the
+  target's gzip/br body verbatim and urllib does not decompress, so you
+  get binary garbage that fails `json()` with "Expecting value" at
+  HTTP 200. (This is why `zenrows_replay.py` worked while naive ports
+  didn't.)
+- Chat through Zenrows arrives buffered (no incremental streaming) —
+  the full NDJSON body is parsed after completion; reply extraction is
+  identical.
+
+The chat transcript config (59 keys, drifts per deploy) lives in
+`backend/notion_chat_config.json`; refresh it with `--refresh-config`
+after capturing a new ground-truth chat request (recorder technique).
