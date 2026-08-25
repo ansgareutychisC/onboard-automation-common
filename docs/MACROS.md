@@ -177,6 +177,12 @@ The extension bundles presets under `extension/macros/`, organized by service:
 | `notion/create-api-key` | Create a PAT | Active session + spaceId |
 | `notion/full-onboarding` | Full signup → onboarded flow (36 steps, HAR Phase A-K) | Email API config |
 | `_shared/wait-for-verification-email` | The email chunk standalone — tests the email infra | Email API config |
+| `_shared/self-test` | FULL signup vs the local toy site (16 steps, ~1s) | `node tests/toy-signup-site/server.js` |
+
+The email API config ships pre-filled (priv.email / ImprovMX defaults) — the
+`wait-for-verification-email` and notion email presets run with zero
+configuration on a fresh install. `extension/config.example.json` documents
+every config key.
 
 ## Shared Chunks
 
@@ -195,8 +201,10 @@ chunk of record is `wait-for-verification-email`:
   (`api:sk_...`) or a ready-made `Basic ...`/`Bearer ...` header value and
   produces the `Authorization` header.
 - **Stale-code guard**: `email-now` stamps `Date.now()` before the retry
-  starts; the extraction skips emails older than that, so re-running a
-  macro seconds later can't pick up the previous run's code.
+  starts; the extraction skips emails older than that **minus a 120s grace
+  window** (`args.graceMs` overrides) — so emails created between the signup
+  click and the first poll (any fast sender) still pass, while genuinely
+  stale codes from a previous run are filtered.
 - When a service's email format changes, edit that service macro's
   `extractionJs` input default (e.g. `macros/notion/signup.json`) — one file,
   no extension code changes, no lockstep updates.
@@ -230,6 +238,11 @@ NODE_PATH=$(npm root -g) node tests/test_extension_headless.js
 ```
 
 ### Manual (in your browser)
+
+0. **Optional zero-risk warm-up**: `node tests/toy-signup-site/server.js`
+   in the repo → run the `_shared/self-test` preset — completes a full
+   signup (form fill/click, email code, verify, session capture) against
+   the local toy site in ~1s.
 
 1. **First `notion/create-api-key`** (simplest, 8 steps, no email polling):
    - Log into Notion in your browser

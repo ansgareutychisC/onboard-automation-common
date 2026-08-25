@@ -1380,27 +1380,49 @@ async function handleTabsFocus(cmd) {
 
 function waitForTabLoaded(tabId, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => {
+    let done = false;
+    const cleanup = () => {
+      clearTimeout(timer);
+      clearInterval(poll);
       chrome.tabs.onUpdated.removeListener(listener);
+    };
+    const succeed = () => {
+      if (done) return;
+      done = true;
+      cleanup();
+      // Small extra delay for JS frameworks to render
+      setTimeout(resolve, 500);
+    };
+    const timer = setTimeout(() => {
+      if (done) return;
+      done = true;
+      cleanup();
       reject(new Error(`Tab ${tabId} did not finish loading within ${timeoutMs}ms`));
     }, timeoutMs);
 
     function listener(tabId_, changeInfo, tab) {
       if (tabId_ === tabId && changeInfo.status === 'complete') {
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(listener);
-        // Small extra delay for JS frameworks to render
-        setTimeout(resolve, 500);
+        succeed();
       }
     }
     chrome.tabs.onUpdated.addListener(listener);
 
+    // Poll as well — on fast-loading pages (local servers, cached pages) the
+    // 'complete' onUpdated event can fire before the listener attaches, and
+    // the one-shot tabs.get below can read a stale 'loading' status. A 250ms
+    // poll closes that race for good.
+    const poll = setInterval(async () => {
+      if (done) return;
+      try {
+        const tab = await chrome.tabs.get(tabId);
+        if (tab && tab.status === 'complete') succeed();
+      } catch (e) { /* tab gone — the timeout will fire */ }
+    }, 250);
+
     // Check if already loaded
     chrome.tabs.get(tabId, (tab) => {
       if (tab && tab.status === 'complete') {
-        clearTimeout(timer);
-        chrome.tabs.onUpdated.removeListener(listener);
-        setTimeout(resolve, 500);
+        succeed();
       }
     });
   });
@@ -2602,6 +2624,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getMacroResult') {
     // Fetch the last macro result (if any)
     sendResponse({ result: state.lastMacroResult || null });
+    return false;
+  }
+  // Quick Exec — run a SINGLE command through the same engine the macro
+  // runner uses (executeMacroStep). This is the "extension as a sandbox"
+  // surface: any of the 23 commands, on demand, from the popup. The result
+  // is pushed back as a 'quickExec-result' message.
+  if (msg.type === 'quickExec') {
+    const qeId = msg.id;
+    (async () => {
+      let result;
+      try {
+        const step = msg.step;
+        if (!step || typeof step !== 'object' || !step.cmd) {
+          throw new Error('quickExec: step must be an object with a "cmd" field');
+        }
+        const ctx = {
+          inputs: (msg.inputs && typeof msg.inputs === 'object') ? msg.inputs : {},
+          results: {},
+          startedAt: Date.now(),
+        };
+        log('info', 'quick-exec', { id: qeId, cmd: step.cmd });
+        result = await executeMacroStep(step, ctx);
+      } catch (err) {
+        result = { ok: false, error: err.message };
+      }
+      try {
+        chrome.runtime.sendMessage({ type: 'quickExec-result', id: qeId, result });
+      } catch (e) { /* popup closed — ignore */ }
+    })();
+    sendResponse({ ok: true });
     return false;
   }
   return false;

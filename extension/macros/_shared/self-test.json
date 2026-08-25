@@ -1,25 +1,24 @@
 {
-  "name": "signup",
-  "service": "notion",
-  "description": "Notion signup chunk: opens the signup page, fills email, waits for the verification code (shared ImprovMX-based email chunk with Notion's extraction logic), submits it, waits for the redirect, then captures the session cookies (userId / token_v2 / deviceId). Ends here — use create-workspace / full-onboarding for the rest of the flow.",
+  "name": "self-test",
+  "service": "shared",
+  "description": "FULL END-TO-END SELF-TEST — no real service needed. Signs up on the local toy signup site (tests/toy-signup-site/server.js, http://127.0.0.1:8898): fills email, receives the verification code via the mock ImprovMX inbox API, submits it, captures the session cookie. Exercises every critical path: tabs.open, form.wait, form.fill (React-safe), form.eval (chrome.debugger CDP), the shared email chunk (email-auth btoa + retry + generic extractionJs), cookies.getAll, and template substitution. Start the toy server first: node tests/toy-signup-site/server.js — then run this preset.",
   "inputs": {
-    "email": "",
-    "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
-    "emailWorkerToken": "",
-    "extractionJs": "(args) => { try { const data = JSON.parse(args.body); const logs = data.logs || []; const sinceMs = Math.max(0, (Math.max(0, (Number(args.sinceMs) || 0) - (Number(args.graceMs) || 120000))) - (Number(args.graceMs) || 120000)); const recipient = (args.email || '').toLowerCase(); for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; const subj = log.subject || ''; const sender = (log.sender && log.sender.email) || ''; if (!/notion/i.test(sender) && !/notion/i.test(subj)) continue; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\s*(?:Notion\\s*)?(?:login|verification|signup|pass)?\\s*code/i, /(?:login|verification|signup|pass)\\s*code(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i, /code[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'notion-subject', subject: subj.slice(0, 100), logId: log.id }; } } return { code: null, reason: logs.length ? 'no Notion code in recent subjects' : 'no emails yet', logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }",
-    "locale": "en-US",
-    "timezone": "America/Los_Angeles"
+    "email": "onboard@priv.email",
+    "baseUrl": "http://127.0.0.1:8898",
+    "emailWorkerUrl": "http://127.0.0.1:8898/v3/domains/priv.email/logs?take=20",
+    "emailWorkerToken": "api:toy-local",
+    "extractionJs": "(args) => { try { const data = JSON.parse(args.body); const logs = data.logs || data.results || []; const sinceMs = Math.max(0, (Math.max(0, (Number(args.sinceMs) || 0) - (Number(args.graceMs) || 120000))) - (Number(args.graceMs) || 120000)); const recipient = (args.email || '').toLowerCase(); let best = null; for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; if (!best || created > best.created) best = { created, subject: log.subject || '', id: log.id }; } if (!best) return { code: null, reason: logs.length ? 'no email newer than sinceMs for this recipient' : 'no emails yet', logCount: logs.length }; const subj = best.subject; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\b.{0,20}?(?:code|passcode|token)/i, /(?:login|verification|verify|signup|sign[- ]?up|passcode|pass|security|access|one[- ]?time|temporary|auth)\\s+(?:code|passcode|token)[^A-Za-z0-9]{0,20}([A-Za-z0-9]{4,10})\\b/i, /\\bcode(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'subject', subject: subj.slice(0, 100), logId: best.id }; } return { code: null, reason: 'no code pattern in subject', subject: subj.slice(0, 100), logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }"
   },
   "steps": [
     {
       "id": "clear-cookies",
       "cmd": "cookies.remove",
-      "url": "https://app.notion.com"
+      "url": "{{inputs.baseUrl}}"
     },
     {
       "id": "open-signup",
       "cmd": "tabs.open",
-      "url": "https://app.notion.com/signup",
+      "url": "{{inputs.baseUrl}}/",
       "active": true
     },
     {
@@ -120,40 +119,32 @@
       "id": "wait-redirect",
       "cmd": "form.eval",
       "tabId": "{{open-signup.tabId}}",
-      "function": "return new Promise((resolve) => { const check = () => { const url = window.location.href; if (url.includes('/onboarding') || (url.includes('app.notion.com') && !url.includes('/signup') && !url.includes('/login'))) { resolve({ redirected: true, url }); return; } setTimeout(check, 1000); }; check(); });",
+      "function": "return new Promise((resolve) => { const check = () => { const url = window.location.href; if (url.includes('/welcome')) { resolve({ redirected: true, url }); return; } setTimeout(check, 500); }; check(); });",
       "args": [],
-      "timeoutMs": 60000
+      "timeoutMs": 30000
     },
     {
       "id": "get-cookies",
       "cmd": "cookies.getAll",
-      "url": "https://app.notion.com"
+      "url": "{{inputs.baseUrl}}"
     },
     {
       "id": "extract-creds",
       "cmd": "eval",
-      "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
+      "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { ok: !!map.toy_session, session: map.toy_session || '', email: (args.email || '') }; }",
       "args": {
-        "cookies": "{{get-cookies.cookies}}"
-      }
-    },
-    {
-      "id": "log-creds",
-      "cmd": "log",
-      "message": "Session captured",
-      "data": {
-        "userId": "{{extract-creds.userId}}",
-        "tokenV2": "{{extract-creds.tokenV2}}"
+        "cookies": "{{get-cookies.cookies}}",
+        "email": "{{inputs.email}}"
       }
     },
     {
       "id": "final-result",
       "cmd": "log",
-      "message": "🎉 Signup complete — session captured. Run create-workspace / create-api-key next.",
+      "message": "🎉 Self-test complete — signup + email verification + session capture all work!",
       "data": {
-        "userId": "{{extract-creds.userId}}",
-        "tokenV2": "{{extract-creds.tokenV2}}",
-        "deviceId": "{{extract-creds.deviceId}}"
+        "email": "{{inputs.email}}",
+        "session": "{{extract-creds.session}}",
+        "code": "{{get-verification-code.result.code}}"
       }
     }
   ]

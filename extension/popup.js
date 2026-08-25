@@ -30,7 +30,7 @@ let refreshInterval = null;
 // in-progress macro edits when the popup reopens.
 // ---------------------------------------------------------------------------
 
-const PERSISTED_FIELDS = ['macroPreset', 'macroInputs', 'macroJson', 'captureFilter'];
+const PERSISTED_FIELDS = ['macroPreset', 'macroInputs', 'macroJson', 'captureFilter', 'quickExecJson'];
 
 // Debounce timer for saving popup state (avoid writing on every keystroke).
 let saveStateTimer = null;
@@ -41,6 +41,7 @@ async function savePopupState() {
     macroInputs: (typeof macroInputsTextarea !== 'undefined' && macroInputsTextarea) ? macroInputsTextarea.value : '',
     macroJson: (typeof macroJsonTextarea !== 'undefined' && macroJsonTextarea) ? macroJsonTextarea.value : '',
     captureFilter: (typeof captureFilterEl !== 'undefined' && captureFilterEl) ? captureFilterEl.value : '',
+    quickExecJson: (typeof quickExecJsonTextarea !== 'undefined' && quickExecJsonTextarea) ? quickExecJsonTextarea.value : '',
   };
   try {
     await chrome.storage.local.set({ popupState: state });
@@ -71,7 +72,18 @@ async function loadPopupState() {
 //                      "Bearer ..." header value
 //   tursoUrl/tursoToken — read directly by lib/turso.js (background)
 // Email config is merged into macro inputs at run time (per-run inputs win).
+//
+// SHIPPED DEFAULTS (friction reduction): when a key has never been saved, the
+// fields pre-fill with the priv.email / ImprovMX defaults below so a fresh
+// install can run the email presets immediately. Clearing a field and saving
+// stores '' — but on next load an empty value falls back to the default again
+// (deliberate: empty config is almost always a mistake for these two keys).
 // ---------------------------------------------------------------------------
+
+const DEFAULT_CONFIG = {
+  emailWorkerUrl: 'https://api.improvmx.com/v3/domains/priv.email/logs?take=20',
+  emailWorkerToken: 'api:sk_691ff26633c94b0d80523433afe3a369',  // priv.email ImprovMX key (committed with user's blessing — see .agents/SKILL-consumer.md)
+};
 
 const CONFIG_FIELDS = ['emailWorkerUrl', 'emailWorkerToken', 'tursoUrl', 'tursoToken'];
 const configEls = {};
@@ -86,14 +98,16 @@ async function loadEmailConfig() {
   try {
     const stored = await chrome.storage.local.get(CONFIG_FIELDS);
     for (const f of CONFIG_FIELDS) {
-      if (configEls[f]) configEls[f].value = stored[f] || '';
+      const val = stored[f] || DEFAULT_CONFIG[f] || '';
+      if (configEls[f]) configEls[f].value = val;
     }
     emailConfig = {
-      emailWorkerUrl: stored.emailWorkerUrl || '',
-      emailWorkerToken: stored.emailWorkerToken || '',
+      emailWorkerUrl: stored.emailWorkerUrl || DEFAULT_CONFIG.emailWorkerUrl,
+      emailWorkerToken: stored.emailWorkerToken || DEFAULT_CONFIG.emailWorkerToken,
     };
   } catch (e) {
-    // Storage unavailable — leave fields empty (non-fatal)
+    // Storage unavailable — fall back to shipped defaults so macros still run
+    emailConfig = { ...DEFAULT_CONFIG };
   }
 }
 
@@ -287,6 +301,12 @@ chrome.runtime.onMessage.addListener((msg) => {
     runMacroBtn.disabled = false;
     runMacroBtn.textContent = '▶ Run Macro';
     stopMacroBtn.disabled = true;
+  } else if (msg.type === 'quickExec-result' && msg.id) {
+    // Result of a Quick Exec command (see the Quick Exec section below).
+    if (msg.id === pendingQuickExecId) {
+      renderQuickExecResult(msg.result);
+      pendingQuickExecId = null;
+    }
   } else if (msg.type === 'capture-event' && msg.event) {
     captureRing.push(msg.event);
     if (captureRing.length > 100) captureRing.shift();
@@ -310,13 +330,12 @@ const macroResultArea = document.getElementById('macroResultArea');
 // We use chrome.runtime.getURL to fetch them.
 const presetCache = {};
 
-// Default inputs — the email API URL + token are intentionally EMPTY here:
-// they auto-fill from the Email & Storage config panel at preset-selection
-// time (so the user sees them) and again at run time (so empty values never
-// reach the macro). Each custom domain has its own email API, so nothing is
-// hardcoded.
+// Default inputs — the email API URL + token auto-fill from the config
+// panel (which itself ships with the priv.email/ImprovMX defaults), so a
+// fresh install can run the email presets with zero configuration. Only the
+// email itself may need editing (any *@priv.email alias works — catch-all).
 const DEFAULT_INPUTS = {
-  email: '',
+  email: 'onboard@priv.email',
   workspaceName: 'My Workspace',
   workspaceIcon: '🏠',
   emailWorkerUrl: '',
@@ -364,10 +383,21 @@ macroPresetSelect.addEventListener('change', async () => {
       workspaceIcon: '🚀',
       planType: 'personal',
     }, null, 2);
+  } else if (name === '_shared/self-test') {
+    // The self-test preset targets the LOCAL toy signup site — it must NOT
+    // inherit the real ImprovMX config (the code email arrives at the toy
+    // server's mock inbox, not at priv.email). Its defaults are self-contained.
+    const m = presetCache[name];
+    macroInputsTextarea.value = JSON.stringify({
+      email: (m.inputs && m.inputs.email) || 'onboard@priv.email',
+      baseUrl: (m.inputs && m.inputs.baseUrl) || 'http://127.0.0.1:8898',
+      emailWorkerUrl: (m.inputs && m.inputs.emailWorkerUrl) || '',
+      emailWorkerToken: (m.inputs && m.inputs.emailWorkerToken) || 'api:toy-local',
+    }, null, 2);
   } else if (name === '_shared/wait-for-verification-email') {
     // The shared chunk only needs the email API fields
     macroInputsTextarea.value = JSON.stringify({
-      email: '',
+      email: DEFAULT_INPUTS.email,
       emailWorkerUrl: emailConfig.emailWorkerUrl || '',
       emailWorkerToken: emailConfig.emailWorkerToken || '',
     }, null, 2);
@@ -476,6 +506,73 @@ window.addEventListener('beforeunload', () => {
   }
   if (refreshInterval) clearInterval(refreshInterval);
 });
+
+// ---------------------------------------------------------------------------
+// Quick Exec — run a SINGLE command through the same engine the macro runner
+// uses (executeMacroStep in background.js). This is the "extension as a
+// sandbox" surface: any of the 23 commands, on demand, with the raw JSON
+// result rendered. {{inputs.x}} templates resolve against the optional
+// "inputs" object.
+// ---------------------------------------------------------------------------
+
+const quickExecJsonTextarea = document.getElementById('quickExecJson');
+const quickExecBtn = document.getElementById('quickExecBtn');
+const quickExecResultEl = document.getElementById('quickExecResult');
+
+let pendingQuickExecId = null;
+
+quickExecJsonTextarea.value = JSON.stringify({ cmd: 'tabs.list' }, null, 2);
+
+quickExecJsonTextarea.addEventListener('input', scheduleSavePopupState);
+
+quickExecBtn.addEventListener('click', async () => {
+  let step;
+  try {
+    step = JSON.parse(quickExecJsonTextarea.value);
+    if (!step || typeof step !== 'object' || !step.cmd) {
+      throw new Error('Command must be an object with a "cmd" field');
+    }
+  } catch (e) {
+    quickExecResultEl.textContent = '✗ Invalid command JSON: ' + e.message;
+    return;
+  }
+  const id = 'qe-' + Date.now();
+  pendingQuickExecId = id;
+  quickExecBtn.disabled = true;
+  quickExecBtn.textContent = 'Running...';
+  quickExecResultEl.textContent = '⏳ Running ' + step.cmd + '...';
+  try {
+    await chrome.runtime.sendMessage({ type: 'quickExec', id, step });
+  } catch (e) {
+    quickExecResultEl.textContent = '✗ Failed to send: ' + e.message;
+    quickExecBtn.disabled = false;
+    quickExecBtn.textContent = '⚡ Run Command';
+    pendingQuickExecId = null;
+  }
+  // Result arrives via the 'quickExec-result' push message (listener above).
+  // Safety net: re-enable the button after 90s regardless.
+  setTimeout(() => {
+    quickExecBtn.disabled = false;
+    quickExecBtn.textContent = '⚡ Run Command';
+    if (pendingQuickExecId === id) {
+      pendingQuickExecId = null;
+      quickExecResultEl.textContent += '\n⚠ Timed out waiting for result.';
+    }
+  }, 90000);
+});
+
+function renderQuickExecResult(result) {
+  quickExecBtn.disabled = false;
+  quickExecBtn.textContent = '⚡ Run Command';
+  let text;
+  try {
+    text = JSON.stringify(result, null, 2);
+  } catch (e) {
+    text = String(result);
+  }
+  if (text.length > 6000) text = text.slice(0, 6000) + '\n... (' + text.length + ' chars total)';
+  quickExecResultEl.textContent = (result && result.ok === false ? '✗ ' : '✓ ') + text;
+}
 
 // ---------------------------------------------------------------------------
 // Diagnostics & Capture panel
@@ -985,6 +1082,11 @@ setInterval(refreshCapture, 2000);
     captureFilterEl.value = persisted.captureFilter;
     captureFilter = persisted.captureFilter;
     renderCaptureList();  // re-render with the restored filter
+  }
+
+  // Restore the Quick Exec command.
+  if (persisted.quickExecJson && quickExecJsonTextarea) {
+    quickExecJsonTextarea.value = persisted.quickExecJson;
   }
 })();
 

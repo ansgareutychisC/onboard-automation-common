@@ -262,6 +262,19 @@
         <div class="hint">Required for AI chat (zstd decompression). Opens in background tab.</div>
       </div>
 
+      <div class="section">
+        <h2>Quick Exec <span class="badge">single command — remote-debug style</span></h2>
+        <textarea id="quickExecJson" rows="3" style="font-size:10px;"></textarea>
+        <div style="display:flex;gap:6px;margin-top:4px;">
+          <button id="quickExecBtn" class="secondary" style="flex:1;padding:5px;">⚡ Run Command</button>
+        </div>
+        <div class="log-area" id="quickExecResult" style="height:100px;min-height:60px;max-height:160px;margin-top:4px;white-space:pre-wrap;">Run any of the 23 commands directly — same engine the macros use.
+Examples:
+  {"cmd":"tabs.list"}
+  {"cmd":"eval","function":"() => location.href"}
+  {"cmd":"fetch","url":"https://httpbin.org/get"}</div>
+      </div>
+
     </div>
 
     <!-- =================== RIGHT COLUMN =================== -->
@@ -283,6 +296,7 @@
             </optgroup>
             <optgroup label="Shared chunks">
               <option value="_shared/wait-for-verification-email">wait-for-verification-email (infra test)</option>
+              <option value="_shared/self-test">self-test (full signup vs local toy site)</option>
             </optgroup>
           </select>
         </div>
@@ -313,8 +327,9 @@
         <h2>Quick Start</h2>
         <div class="instructions">
           <strong>A. Macro Replay (local):</strong> Fill the Email &amp; Storage config (left) → pick a preset → edit inputs → Run Macro.<br>
-          <strong>B. Backend-driven:</strong> Start Python dev daemon → Connect above → daemon drives commands.<br><br>
-          <strong>Testing order:</strong> <code>wait-for-verification-email</code> (infra only) → <code>notion/create-api-key</code> (simplest API flow) → <code>notion/signup</code> → <code>notion/full-onboarding</code>.
+          <strong>B. Self-test first:</strong> <code>node tests/toy-signup-site/server.js</code> in the repo → run the <code>_shared/self-test</code> preset — full signup flow, no real service.<br>
+          <strong>C. Backend-driven:</strong> Start the Python dev daemon (<code>python-dev-daemon/bridge.py</code>) → Connect above → daemon drives commands.<br><br>
+          <strong>Live-service order:</strong> <code>notion/create-api-key</code> (simplest) → <code>notion/signup</code> → <code>notion/full-onboarding</code>.
         </div>
       </div>
 

@@ -1,0 +1,9 @@
+{
+  "$comment": "Onboard Automation Bridge — config reference. The extension stores these in chrome.storage.local; the popup's 'Email & Storage Config' panel is the UI. The ImprovMX defaults below SHIP pre-filled (the popup falls back to them when a key was never saved), so a fresh install runs the email presets with zero configuration. This file is documentation — the extension does not read it. For automation, set the same keys via chrome.storage.local.",
+  "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
+  "emailWorkerToken": "api:sk_691ff26633c94b0d80523433afe3a369",
+  "tursoUrl": "",
+  "tursoToken": "",
+  "$serverUrl": "(optional) ws://127.0.0.1:3000 for the local dev daemon, or wss://<your-preview-host>/ in the sandbox — set via the popup's Server Connection box, not here",
+  "$authToken": "(optional) only if the daemon was started with --token"
+}

@@ -211,7 +211,7 @@ async function main() {
     await popup.waitForFunction(() => {
       const v = document.getElementById('macroJson').value;
       return v && v.includes('wait-for-verification-email');
-    }, { timeout: 10000 });
+    }, undefined, { timeout: 10000 });
     check('preset loads nested macros/_shared/*.json via runtime.getURL', true);
 
     const prefilled = await popup.evaluate(() => JSON.parse(document.getElementById('macroInputs').value || '{}'));

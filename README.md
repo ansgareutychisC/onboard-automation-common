@@ -36,29 +36,38 @@ knowledge):
 ```
 onboard-automation-common/
 ├── extension/                          # The Chrome MV3 extension (Phase 1)
-│   ├── manifest.json                   # "Onboard Automation Bridge" v0.9.0, ES module SW
+│   ├── manifest.json                   # "Onboard Automation Bridge" v0.9.1, ES module SW
 │   ├── background.js                   # Macro runner + 23 command handlers + WS (gated)
-│   ├── popup.{html,js}                 # Macro replay UI + Email & Storage config panel
+│   ├── popup.{html,js}                 # Macro replay UI + config panel + Quick Exec
+│   ├── INSTALL.md                      # install + first-run guide (shipped in the zip)
+│   ├── config.example.json             # config keys reference (defaults documented)
 │   ├── sandbox.{html,js}               # Page-context fetch for zstd responses
 │   ├── lib/
 │   │   └── turso.js                    # Turso (libSQL) HTTP client — no-op when unconfigured
 │   └── macros/
 │       ├── _shared/
-│       │   └── wait-for-verification-email.json   # reusable email chunk (ImprovMX-based)
+│       │   ├── wait-for-verification-email.json   # reusable email chunk (ImprovMX-based)
+│       │   └── self-test.json          # full signup vs the local toy site (zero-risk E2E)
 │       └── notion/
 │           ├── signup.json             # signup + email verify + session capture (17 steps)
 │           ├── create-workspace.json   # workspace on an existing account
 │           ├── activate-trial.json     # 14-day trial (needs hCaptcha token)
 │           ├── create-api-key.json     # PAT creation
 │           └── full-onboarding.json    # full signup → onboarded (36 steps)
+├── python-dev-daemon/
+│   └── bridge.py                       # local dev daemon: WS bridge + curl-able /api/command
 ├── tests/
 │   ├── test_macro_dryrun.js            # dry-run all macros vs HAR-captured responses
 │   ├── test_email_extraction_live.js   # extractionJs vs the live ImprovMX API
-│   ├── test_extension_headless.js      # full E2E in headless Chromium (Playwright)
+│   ├── test_extension_headless.js      # E2E in headless Chromium (email chunk + Turso)
+│   ├── test_toy_signup_e2e.js          # FULL signup E2E vs the toy site + daemon remote control
+│   ├── toy-signup-site/
+│   │   └── server.js                   # local "SaaS" signup site (Notion-like selectors + mock inbox)
 │   └── har_fixtures/                   # extracted HAR calls (notion API responses)
 ├── docs/
 │   ├── REVAMP-PLAN.md                  # the plan (Phase 1-3)
-│   └── MACROS.md                       # macro format reference + chunk pattern
+│   ├── MACROS.md                       # macro format reference + chunk pattern
+│   └── EXTENSION-VS-CHROME-RD.md       # extension vs raw CDP analysis
 └── .agents/
     ├── SKILL.md                        # meta-agent knowledge (read this first)
     └── SKILL-consumer.md               # reading *@priv.email via ImprovMX API
@@ -76,49 +85,79 @@ onboard-automation-common/
 
 ## Quick Start
 
-### Use the Extension
+### Use the Extension (zero-config)
 
 1. Open `chrome://extensions`, enable Developer mode.
 2. Click "Load unpacked", select the `extension/` directory.
-3. Click the extension icon → fill the **Email & Storage Config** panel:
-   - Email API URL: `https://api.improvmx.com/v3/domains/priv.email/logs?take=20`
-   - Email API token: `api:sk_...` (ImprovMX key; see `.agents/SKILL-consumer.md`)
-   - Turso URL/token: optional (persistence)
-4. Pick a preset → edit inputs → **Run Macro**.
+3. Click the extension icon — the **Email & Storage Config** panel is already
+   pre-filled with the priv.email / ImprovMX defaults (URL + token ship in
+   the build), so you can run the email presets immediately. Optional:
+   Turso URL/token for run-history persistence.
 
-Suggested order: `_shared/wait-for-verification-email` (infra test) →
-`notion/create-api-key` (simplest API flow, needs an active Notion session) →
-`notion/signup` → `notion/full-onboarding`.
+Suggested order: `_shared/self-test` (after starting the toy site — full
+signup flow, no real service) → `notion/create-api-key` (simplest live flow,
+needs an active Notion session) → `notion/signup` → `notion/full-onboarding`.
+
+### Self-test without touching a real service
+
+```bash
+node tests/toy-signup-site/server.js    # local toy signup site + mock inbox
+# then run the _shared/self-test preset in the extension popup
+```
+
+The toy site mimics the Notion signup flow's shape (same selectors, same SPA
+transitions) and exposes an ImprovMX-shaped inbox API — the self-test macro
+completes a full signup + email verification + session capture in ~1s.
 
 ### Run the Test Suite
 
 ```bash
-# 1. Static dry-run of every macro against HAR-captured Notion responses
-node tests/test_macro_dryrun.js
-
-# 2. Extraction logic vs the live ImprovMX API (read-only)
-node tests/test_email_extraction_live.js
-
-# 3. Full E2E: real extension in headless Chromium (needs Playwright + Chromium)
-NODE_PATH=$(npm root -g) node tests/test_extension_headless.js
+node tests/test_macro_dryrun.js                      # 7/7 macros vs HAR fixtures
+node tests/test_email_extraction_live.js             # 23/23 vs live ImprovMX (read-only)
+NODE_PATH=$(npm root -g) node tests/test_extension_headless.js   # email chunk + Turso E2E
+NODE_PATH=$(npm root -g) node tests/test_toy_signup_e2e.js       # full signup + daemon E2E
 ```
 
-All three currently pass: 6/6 macros (79/79 steps) in the dry-run, 23/23 live
-extraction checks, 21/21 headless E2E checks (extension load, config
-persistence, nested preset fetch, real macro execution with
-`chrome.debugger`-based eval, retry loop, Basic-auth email polling, code
-extraction, and the Turso persistence wire format against a mock).
+All four pass: 7/7 macros (95/95 steps) in the dry-run, 23/23 live checks,
+25 checks in the headless email-chunk E2E, and 18 checks in the toy-signup
+E2E (defaults, full signup, Quick Exec, and daemon-driven remote control).
+
+### Optional: the dev daemon (agent-driven remote control)
+
+```bash
+python3 python-dev-daemon/bridge.py            # WS bridge + status page on :3000
+# connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
+curl -X POST http://127.0.0.1:3000/api/command \
+  -H 'Content-Type: application/json' \
+  -d '{"type":"eval","function":"() => ({ title: document.title })"}'
+```
+
+## What the extension connects to
+
+| Connection | Default | Purpose |
+|---|---|---|
+| Email inbox API (ImprovMX) | **on** (shipped defaults) | reading verification codes for `*@priv.email` |
+| Turso (libSQL) | **off** unless configured | run/step history persistence (optional) |
+| Python dev daemon (WS) | **off** (`serverUrl` empty) | agent-driven interactive debugging — `python-dev-daemon/bridge.py` |
+| CF Worker (Phase 2) | **not built yet** | HTTP-only production backend reading the same Turso DB |
+
+No backend is required for the MVP — the extension is useful by itself.
+The Phase 2 Worker needs your Cloudflare account to deploy (wrangler login
+or a CF API token).
 
 ## Current State
 
-- ✅ Phase 1: fork + generalize the extension, Turso client, email
-  verification chunk (provider-agnostic, ImprovMX), macro chunking
-  (`notion/` + `_shared/`), popup config panel, automated test suite
+- ✅ Phase 1: extension + Turso client, provider-agnostic email chunk,
+  macro chunking, popup config panel **with shipped defaults**, Quick Exec
+  (single-command sandbox mode), full automated test suite
+- ✅ Toy signup site + `_shared/self-test` macro — full signup E2E without a
+  real service
+- ✅ Python dev daemon (`python-dev-daemon/bridge.py`) — WS bridge +
+  curl-able `POST /api/command` remote control, verified end-to-end
 - 🔲 Live Notion signup verification in a real browser (needs user-side
   testing: hCaptcha enterprise + real email delivery to `*@priv.email`)
 - 🔲 Supabase macro (`macros/supabase/signup.json` — hCaptcha solved by user)
 - 🔲 Todoist macro (`macros/todoist/signup.json` — pure HTTP, no DOM)
-- 🔲 Python dev daemon port (`python-dev-daemon/`)
 - 🔲 Phase 2: CF Worker dashboard (HTTP-only, reads the same Turso DB)
 
 ## Documentation
@@ -127,6 +166,8 @@ extraction, and the Turso persistence wire format against a mock).
   open questions answered; §6 has the step-by-step.
 - **[docs/MACROS.md](docs/MACROS.md)** — macro format reference, the shared
   chunk pattern, testing workflow.
+- **[docs/EXTENSION-VS-CHROME-RD.md](docs/EXTENSION-VS-CHROME-RD.md)** —
+  extension route vs. raw Chrome remote debugging: when each wins.
 - **[.agents/SKILL.md](.agents/SKILL.md)** — meta knowledge for agents
   working on this repo. Read this first.
 - **[.agents/SKILL-consumer.md](.agents/SKILL-consumer.md)** — how to read

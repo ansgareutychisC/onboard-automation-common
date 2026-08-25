@@ -146,6 +146,16 @@ those fields silently becomes undefined → defaults.
 req/min on the free plan. The chunk polls at `intervalMs: 10000` (6/min).
 Don't lower it much — a 429 backoff is worse than waiting.
 
+**sinceMs grace window:** the chunk's `email-now` step stamps `Date.now()`
+AFTER the signup click (the chunk is inlined after the code-request action).
+An email created between the click and the first poll (any fast sender — the
+toy site, some real providers) is OLDER than sinceMs and gets filtered →
+the retry loops until timeout with "no email newer than sinceMs". The fix
+(2026-08-25): the extractionJs subtracts a grace window —
+`Math.max(0, (Number(args.sinceMs) || 0) - (Number(args.graceMs) || 120000))`
+— so "since" effectively means "since 2 min before polling started".
+Override with `args.graceMs` if you need strict or looser semantics.
+
 ### 1.6 `getCaptchaToken` is hCaptcha-only — both current services use hCaptcha
 
 Notion and Supabase both use hCaptcha enterprise. The handler queries
@@ -215,7 +225,40 @@ evals in a Node `vm` sandbox, you must add `btoa`/`atob` yourself
 the user. What genuinely needs the user: real Notion signup (hCaptcha
 enterprise, real IP, real email delivery to `*@priv.email`).
 
-### 1.12 Don't trust commit messages that reference files that don't exist
+### 1.12 `tabs.open`'s load-wait races on fast pages — poll, don't just listen
+
+`waitForTabLoaded` originally relied on `chrome.tabs.onUpdated('complete')`
+plus a one-shot `chrome.tabs.get`. On notion.com (multi-second loads) that's
+fine. On a fast local page the 'complete' event can fire BEFORE the listener
+attaches, and the one-shot tabs.get can read a stale 'loading' — the step
+then fails with "did not finish loading within 30000ms" even though the tab
+is loaded. Fixed (2026-08-25) by adding a 250ms `tabs.get` status poll
+alongside the listener. Lesson: event-listener patterns that were
+battle-tested against slow sites need a polling backstop before you point
+them at localhost.
+
+### 1.13 Macro "click the first matching button" assumes views are REMOVED from the DOM
+
+The notion click pattern
+(`querySelectorAll('div[role="button"]').…innerText === 'Continue' → click`)
+clicks the FIRST match. If a site keeps old views in the DOM hidden with
+`display:none` (instead of removing them, like Notion's SPA does), the
+"Continue" from the PREVIOUS view is still first in document order — the
+macro clicks the wrong button and the flow silently stalls (symptom: the
+email step re-runs, verify never fires). The toy site originally had this
+bug. Two lessons: (a) test sites must mimic the real DOM lifecycle (forward
+transitions REMOVE earlier views), (b) if a real service ever keeps hidden
+duplicate buttons, the click function needs a visibility check
+(`b.offsetParent !== null`).
+
+### 1.14 Playwright `waitForFunction` takes options as the THIRD argument
+
+`page.waitForFunction(fn, arg, options)` — passing `{ timeout: N }` as the
+second arg silently passes it as the function's argument and the default
+30s timeout applies. Symptom: "Timeout 30000ms exceeded" when you asked for
+90s. Always `waitForFunction(fn, undefined, { timeout })`.
+
+### 1.15 Don't trust commit messages that reference files that don't exist
 
 The notion repo's commit `91b75cb` claims "All 4 macros pass (56/56 steps
 total)" and "18 pytest tests pass" — but the test scripts
@@ -305,29 +348,50 @@ total)" and "18 pytest tests pass" — but the test scripts
   pre-fills preset inputs and merges into macro inputs at run time
   (per-run values win); preset dropdown grouped Notion + Shared chunks
 - **Test suite — ALL PASSING**:
-  - `tests/test_macro_dryrun.js` — 6/6 macros, 79/79 steps vs HAR fixtures,
-    template-ref lint clean (recursive, walks retry sub-steps)
+  - `tests/test_macro_dryrun.js` — 7/7 macros, 95/95 steps vs HAR fixtures,
+    template-ref lint clean
   - `tests/test_email_extraction_live.js` — 23/23 checks vs the live
-    ImprovMX API (real response shape + synthetic Notion subjects)
-  - `tests/test_extension_headless.js` — 21/21 checks: real extension in
-    headless Chromium, full popup → config → preset → run → result flow,
-    chrome.debugger evals, retry loop, Basic-auth polling, code extraction,
-    Turso persistence wire format vs mock pipeline endpoint
+    ImprovMX API
+  - `tests/test_extension_headless.js` — 25 checks: email chunk E2E +
+    Turso wire format in headless Chromium
+  - `tests/test_toy_signup_e2e.js` — 18 checks: FULL signup E2E (real DOM,
+    email chunk, session capture) + Quick Exec + daemon remote control
+- **Shipped defaults (2026-08-25)**: the popup config panel pre-fills the
+  ImprovMX URL + priv.email token; DEFAULT_INPUTS.email = onboard@priv.email
+  — fresh installs run the email presets with zero configuration
+  (`extension/config.example.json` documents every key)
+- **Toy signup site + `_shared/self-test` macro**: local Notion-shaped
+  signup site (`tests/toy-signup-site/server.js`) + a 16-step macro that
+  completes a full signup incl. email verification + session capture in ~1s
+  — the user can verify the extension end-to-end without touching a real
+  service
+- **Quick Exec** (popup): run any of the 23 commands as a single JSON with
+  the raw result rendered — the "extension as a sandbox" REPL surface
+- **Python dev daemon** (`python-dev-daemon/bridge.py`): WS bridge matching
+  the extension protocol + HTTP long-poll fallback + curl-able
+  `POST /api/command` (eval/fetch/macro.run round-trips verified E2E);
+  plain-GET `/` serves a status page (the same URL the extension
+  WS-upgrades to — matters for sandbox preview URLs)
+- **`waitForTabLoaded` hardening**: 250ms tabs.get poll added — the old
+  event-only wait raced on fast local pages ("did not finish loading
+  within 30000ms" on a 5ms page)
+- **sinceMs grace window** in all extractionJs (default 120s, overridable
+  via `args.graceMs`) — fixes instant-sender emails being filtered as
+  "stale" (see §1.5)
 
 ### Next
 1. **Live Notion test (USER-SIDE — the only remaining integration step)** —
-   load extension in Chrome, fill the Email & Storage config, run
-   `notion/signup`. **Use `*@priv.email` addresses, not privatimail.com
-   (blocked by Notion).** Everything machine-testable has been tested.
+   load extension in Chrome (defaults are pre-filled), run `notion/signup`.
+   **Use `*@priv.email` addresses, not privatimail.com (blocked by Notion).**
+   Everything machine-testable has been tested — including a full signup
+   flow on the toy site.
 2. **Then supabase** — write `macros/supabase/signup.json` (needs the
    extension — hCaptcha required; user solves it manually, form
    auto-submits).
 3. **Then todoist** — `macros/todoist/signup.json` (pure HTTP, no DOM, no
    captcha).
-4. **Python dev daemon port** — `python-dev-daemon/` from notion v0.8.4's
-   `scripts/run_bridge_aiohttp.py` (WS, local only, agent-driven debug).
-5. **Phase 2** — CF Worker dashboard (HTTP-only, reads/writes the same
-   Turso DB; no WS, no DO).
+4. **Phase 2** — CF Worker dashboard (HTTP-only, reads/writes the same
+   Turso DB; no WS, no DO). Needs the user's Cloudflare account to deploy.
 
 ## 4. Environment + workflow notes for the next agent
 
@@ -484,17 +548,21 @@ onboard-automation-common/
 │   └── SKILL-consumer.md         ← priv.email / ImprovMX consumer skill
 ├── docs/
 │   ├── REVAMP-PLAN.md            ← the full plan, all questions answered
-│   └── MACROS.md                 ← macro format reference + chunk pattern
+│   ├── MACROS.md                 ← macro format reference + chunk pattern
+│   └── EXTENSION-VS-CHROME-RD.md ← extension vs raw CDP analysis
 ├── extension/                    ← the actual Chrome MV3 extension (Phase 1)
-│   ├── manifest.json             ← "Onboard Automation Bridge" v0.9.0, ES module
-│   ├── background.js             ← 2758 lines — macro runner + 23 cmd handlers + WS (gated)
-│   ├── popup.html / popup.js     ← macro replay UI + Email & Storage config panel
+│   ├── manifest.json             ← "Onboard Automation Bridge" v0.9.1, ES module
+│   ├── background.js             ← macro runner + 23 cmd handlers + WS (gated) + quickExec
+│   ├── popup.html / popup.js     ← macro replay + config panel (shipped defaults) + Quick Exec
+│   ├── INSTALL.md                ← install + first-run guide (shipped in the release zip)
+│   ├── config.example.json       ← config keys reference
 │   ├── sandbox.html / sandbox.js ← page-context fetch for zstd-native
 │   ├── lib/
 │   │   └── turso.js              ← Turso HTTP client (no-op when not configured)
 │   ├── macros/
 │   │   ├── _shared/
-│   │   │   └── wait-for-verification-email.json  ← the reusable email chunk
+│   │   │   ├── wait-for-verification-email.json  ← the reusable email chunk
+│   │   │   └── self-test.json    ← full signup vs the toy site (16 steps)
 │   │   └── notion/
 │   │       ├── signup.json       ← 17 steps: signup + email verify + session capture
 │   │       ├── create-workspace.json
@@ -502,10 +570,14 @@ onboard-automation-common/
 │   │       ├── create-api-key.json
 │   │       └── full-onboarding.json ← 36 steps: the full v0.8.4 flow
 │   └── icons/                    ← placeholder PNGs
+├── python-dev-daemon/
+│   └── bridge.py                 ← dev daemon: WS bridge + /api/command + status page
 ├── tests/
 │   ├── test_macro_dryrun.js      ← dry-run all macros vs HAR fixtures + lint
 │   ├── test_email_extraction_live.js ← extractionJs vs live ImprovMX
-│   ├── test_extension_headless.js ← full E2E, real extension in headless Chromium
+│   ├── test_extension_headless.js ← email chunk + Turso E2E, headless Chromium
+│   ├── test_toy_signup_e2e.js    ← FULL signup E2E + Quick Exec + daemon remote control
+│   ├── toy-signup-site/server.js ← local Notion-shaped signup site + mock inbox
 │   └── har_fixtures/             ← extracted HAR calls (notion API responses)
 ├── README.md                     ← project overview (current for v2)
 └── .gitignore                    ← includes secrets protection + test artifacts
@@ -514,7 +586,6 @@ onboard-automation-common/
 **Not yet created:**
 - `extension/macros/supabase/` — supabase macros
 - `extension/macros/todoist/` — todoist macros
-- `python-dev-daemon/` — the local dev daemon (fork from notion v0.8.4's `scripts/run_bridge_aiohttp.py`)
 - `worker-v2/` — Phase 2 CF Worker (HTTP-only, reads from Turso)
 
 ## 8. Quick bootstrap for a fresh sandbox
@@ -540,22 +611,22 @@ for f in extension/background.js extension/popup.js extension/sandbox.js extensi
   node --check "$f" || echo "FAIL: $f"
 done
 
-# 5. Run the test suite (all three should pass on a clean checkout)
-node tests/test_macro_dryrun.js                      # 6/6 macros vs HAR fixtures
+# 5. Run the test suite (all four should pass on a clean checkout)
+node tests/test_macro_dryrun.js                      # 7/7 macros vs HAR fixtures
 node tests/test_email_extraction_live.js             # 23/23 vs live ImprovMX (read-only)
-NODE_PATH=$(npm root -g) node tests/test_extension_headless.js   # 21/21 E2E (needs Playwright)
-# NOTE the headless test requires channel:'chromium' — plain headless uses
+NODE_PATH=$(npm root -g) node tests/test_extension_headless.js   # email chunk + Turso E2E
+NODE_PATH=$(npm root -g) node tests/test_toy_signup_e2e.js       # FULL signup + daemon E2E
+# NOTE the headless tests require channel:'chromium' — plain headless uses
 # headless-shell which silently ignores --load-extension (see §1.11).
 
 # 6. Load the extension in Chrome (user-side live test)
 # - chrome://extensions → Developer mode → Load unpacked → select extension/
-# - Click the extension icon → fill the Email & Storage Config panel
-#   (ImprovMX URL + api:sk_... token, see .agents/SKILL-consumer.md)
-# - Pick a preset → edit inputs → Run Macro
+# - Click the extension icon — config is pre-filled (shipped defaults);
+#   optionally start the toy site and run the _shared/self-test preset first
 
-# 7. For dev/debug with the Python daemon (not yet ported):
-# - The daemon doesn't exist in our repo yet — port it from notion-ref/scripts/run_bridge_aiohttp.py
-# - OR just use the extension standalone for now
+# 7. Optional: start the dev daemon (WS bridge + curl-able remote control)
+python3 python-dev-daemon/bridge.py --port 3000
+# connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
 ```
 
 ## 9. When in doubt

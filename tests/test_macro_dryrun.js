@@ -46,6 +46,12 @@ const TEST_INPUTS = {
     emailWorkerUrl: IMPROVMX_MOCK_URL,
     emailWorkerToken: IMPROVMX_MOCK_TOKEN,
   },
+  'self-test': {
+    email: 'test-signup@priv.email',
+    baseUrl: 'http://127.0.0.1:8898',
+    emailWorkerUrl: 'http://127.0.0.1:8898/v3/domains/priv.email/logs?take=20',
+    emailWorkerToken: IMPROVMX_MOCK_TOKEN,
+  },
   'signup': {
     email: 'test-signup@priv.email',
     emailWorkerUrl: IMPROVMX_MOCK_URL,
@@ -80,10 +86,12 @@ const TEST_INPUTS = {
 // Per-macro mock email subjects — exercises different extraction layers:
 //   signup/full-onboard → Notion layer 2 ("... login code is XXX")
 //   shared chunk        → generic layer 1 ("XXX is your ... code")
+//   self-test           → toy-site subject ("Your login code is XXX")
 const MOCK_SUBJECTS = {
   'wait-for-verification-email': 'XJ4K2B is your verification code',
   'signup': 'Your temporary Notion login code is XJ4K2B',
   'full-onboarding': 'Your temporary Notion login code is XJ4K2B',
+  'self-test': 'Your login code is XJ4K2B',
 };
 
 // -----------------------------------------------------------------------------
@@ -99,6 +107,9 @@ const MOCK_COOKIES = [
   { name: 'notion_user_id', value: HAR_USER_ID, domain: '.notion.com', path: '/' },
   { name: 'token_v2', value: 'mock-token-v2-value', domain: '.notion.com', path: '/' },
   { name: 'notion_device_id', value: HAR_DEVICE_ID, domain: '.notion.com', path: '/' },
+  // The toy signup site's session cookie (set by the /welcome transition) —
+  // needed by the self-test macro's extract-creds step.
+  { name: 'toy_session', value: 'sess_mock_0123456789abcdef', domain: '127.0.0.1', path: '/' },
 ];
 
 function mockLoadUserContentBody(userId) {
@@ -637,8 +648,14 @@ async function runStep(step, ctx, harDb, mockState) {
     case 'form.eval':
       return { ok: true, clicked: true, redirected: true, url: 'https://app.notion.com/onboarding' };
 
-    case 'fetch':
+    case 'fetch': {
+      // The toy site's /api/signup + /api/verify endpoints aren't in the HAR
+      // database — mock them so the self-test macro flows through.
+      if ((resolved.url || '').includes('127.0.0.1:8898/api/')) {
+        return { ok: true, status: 200, statusText: 'OK', body: JSON.stringify({ ok: true, session: 'sess_mock' }), finalUrl: resolved.url, headers: {} };
+      }
       return await runFetchStep(resolved, ctx, harDb, mockState);
+    }
 
     case 'eval':
       return await runEvalStep(resolved, ctx);
@@ -660,8 +677,10 @@ async function runFetchStep(step, ctx, harDb, mockState) {
     return { ok: false, error: `invalid URL: ${url}` };
   }
 
-  // Special case: ImprovMX email API (for the wait-for-verification-email chunk)
-  if (url.includes('improvmx.com')) {
+  // Special case: ImprovMX-style inbox API (real ImprovMX for the shared
+  // chunk / notion macros, or the toy site's mock at 127.0.0.1:8898 whose
+  // path mirrors the real one — both contain 'priv.email').
+  if (url.includes('improvmx.com') || url.includes('priv.email')) {
     return mockImprovMX(step, mockState, ctx.__macroName, ctx);
   }
 
