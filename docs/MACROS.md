@@ -171,7 +171,8 @@ The extension bundles presets under `extension/macros/`, organized by service:
 
 | Preset | Description | Requires |
 |---|---|---|
-| `notion/signup` | Signup + email verification + session capture (17 steps) | Email API config |
+| `notion/signup` | Signup + email verification, form-based (17 steps) | Email API config |
+| `notion/signup-rest` | **PURE REST signup — zero clicks** (17 steps; reads code from v3-mail) | Named priv.email alias |
 | `notion/submit-code` | Type a pasted verification code into the open signup tab | The code (from Hotmail) |
 | `notion/create-workspace` | Create a workspace on an existing account | Active session |
 | `notion/activate-trial` | Activate 14-day business trial | hCaptcha P1_ token |

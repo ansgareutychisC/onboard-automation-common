@@ -73,9 +73,11 @@ const state = {
   // Macro run control: only one macro at a time; Stop button sets the flag.
   macroRunning: false,
   macroCancelRequested: false,
-  // Tabs whose debugger we OWN and keep attached for the duration of a macro
-  // run (avoids the "being debugged" infobar flickering on every eval step).
-  debuggerStickyTabs: new Set(),
+  // Reference-counted debugger sessions: tabId -> Set<holder>
+  // (holders: 'macro' for the current run, 'xhr:<id>' per interceptor,
+  //  'adhoc' for one-shot evals). Attach/detach is refcounted so features
+  //  sharing a tab don't kill each other's debugger session.
+  debuggerHolders: new Map(),
 };
 
 const MAX_LOG = 200;
@@ -1535,8 +1537,9 @@ async function handleFormEval(cmd) {
   // The function body is wrapped: `(function(args){ <body> })(<args>)`
   // and evaluated via Runtime.evaluate, which returns the result directly.
   try {
-    // Attach the debugger (sticky-aware during macro runs)
-    await debuggerAttach(tabId);
+    // Attach the debugger (refcounted holder; 'macro' keeps it for the run)
+    const feHolder = state.macroRunning ? 'macro' : 'adhoc';
+    await debuggerAttach(tabId, feHolder);
     // Enable the Runtime domain
     await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
     // Build the expression — wrap the function body and call it with args
@@ -1552,8 +1555,8 @@ async function handleFormEval(cmd) {
         userGesture: true,
       }
     );
-    // Detach (sticky-aware during macro runs)
-    await debuggerDetach(tabId);
+    // Detach (release our holder; real detach only when last holder leaves)
+    await debuggerDetach(tabId, feHolder);
     const durationMs = Date.now() - startTime;
     if (evalResult.exceptionDetails) {
       const exc = evalResult.exceptionDetails;
@@ -1671,8 +1674,9 @@ async function handleXhrIntercept(cmd) {
   log('info', 'xhr.intercept-start', { id, tabId, urlPattern, method });
   capture('xhr.intercept', { tabId, urlPattern, method, timeoutMs: timeout, phase: 'start' }, { id });
 
-  // Attach the debugger to the tab (sticky-aware during macro runs)
-  const attached = await debuggerAttach(tabId);
+  // Attach the debugger to the tab under this interceptor's own holder so
+  // concurrent eval/form.eval calls cannot detach it (refcounted).
+  const attached = await debuggerAttach(tabId, `xhr:${id}`);
   if (!attached) {
     // Another debugger owns this tab — we can still listen if it's ours from
     // a sticky attach; if truly foreign, commands will fail below as before.
@@ -1760,9 +1764,9 @@ async function handleXhrIntercept(cmd) {
             responseBody: captured.responseBody,
           },
         });
-        // Detach
+        // Detach (release this interceptor's holder)
         chrome.debugger.onEvent.removeListener(listener);
-        await debuggerDetach(tabId);
+        await debuggerDetach(tabId, `xhr:${id}`);
       }
     }
   };
@@ -1777,7 +1781,7 @@ async function handleXhrIntercept(cmd) {
         tabId, urlPattern, ok: false, error: 'timeout', timeoutMs: timeout, phase: 'timeout',
       }, { id });
       chrome.debugger.onEvent.removeListener(listener);
-      await debuggerDetach(tabId);
+      await debuggerDetach(tabId, `xhr:${id}`);
       sendError(id, `No XHR matching ${urlPattern} within ${timeout}ms`);
     }
   }, timeout);
@@ -1921,26 +1925,36 @@ async function findEvalTabId(preferredTabId) {
 }
 
 // ---------------------------------------------------------------------------
-// Sticky-aware debugger attach/detach helpers.
+// Reference-counted debugger sessions (debuggerHolders).
 //
-// While a macro run is in flight, the FIRST attach to a tab is kept for the
-// rest of the run (state.debuggerStickyTabs) and detached in
-// handleMacroRun's finally block. Without this, every eval/form.eval step
-// (and every retry-loop condition check) attaches/detaches — the "…started
-// debugging this browser" infobar flickers in and out for the whole run,
-// which users read as "stuck in debugging mode". All debugger users MUST go
-// through these helpers so nobody detaches someone else's (or the sticky)
-// attachment.
+// MULTIPLE features attach chrome.debugger to the same tab: eval steps,
+// form.eval, xhr.intercept, retry-condition checks. If each one blindly
+// attach/detaches, the first detach KILLS every other feature's session
+// (latent bug inherited from v0.8.4: a daemon-driven xhr.intercept died the
+// moment a subsequent form.eval ran -- the interceptor saw nothing). These
+// helpers make attach/detach reference-counted per tab:
+//
+//   debuggerAttach(tabId, holder) -- first holder attaches the real debugger;
+//       further holders just register. Returns true when WE own the session
+//       (fresh or shared), false when a FOREIGN debugger (DevTools, another
+//       extension) is attached (tolerated -- commands may still work).
+//   debuggerDetach(tabId, holder) -- unregisters; the real detach happens only
+//       when the last holder releases.
+//
+// During a macro run, eval/form.eval hold under the 'macro' holder which is
+// released at run end -- one stable infobar for the whole run instead of
+// flickering per step.
 // ---------------------------------------------------------------------------
 
-// Attach the debugger to a tab. Returns true if WE own the attachment
-// (freshly attached, or already sticky from this run); false when another
-// debugger (e.g. DevTools) is attached — tolerated, as in the original code.
-async function debuggerAttach(tabId) {
-  if (state.macroRunning && state.debuggerStickyTabs.has(tabId)) return true;
+async function debuggerAttach(tabId, holder = 'adhoc') {
+  const holders = state.debuggerHolders.get(tabId);
+  if (holders && holders.size > 0) {
+    holders.add(holder);  // we already own this tab's debugger session
+    return true;
+  }
   try {
     await chrome.debugger.attach({ tabId }, '1.3');
-    if (state.macroRunning) state.debuggerStickyTabs.add(tabId);
+    state.debuggerHolders.set(tabId, new Set([holder]));
     return true;
   } catch (err) {
     if (err.message && err.message.includes('Another debugger')) return false;
@@ -1948,21 +1962,26 @@ async function debuggerAttach(tabId) {
   }
 }
 
-// Detach the debugger — unless the tab is sticky for the current macro run
-// (the run-end cleanup detaches all sticky tabs).
-async function debuggerDetach(tabId) {
-  if (state.debuggerStickyTabs.has(tabId)) return;
+async function debuggerDetach(tabId, holder = 'adhoc') {
+  const holders = state.debuggerHolders.get(tabId);
+  if (holders) {
+    holders.delete(holder);
+    if (holders.size > 0) return;  // another feature still needs the session
+    state.debuggerHolders.delete(tabId);
+  }
+  // No registered holders (or foreign session) -- detach if we own it; a
+  // failed detach (foreign/already-detached) is harmless.
   try {
     await chrome.debugger.detach({ tabId });
-  } catch (e) { /* already detached */ }
+  } catch (e) { /* already detached / not ours */ }
 }
 
-// If the user cancels the debugger infobar on a sticky tab (or the tab closes),
-// drop it from the sticky set so we don't try to detach a ghost attachment.
+// If the user cancels the debugger infobar on a tab (or the tab closes),
+// drop its holder registry so the next attach re-attaches for real.
 if (chrome.debugger && chrome.debugger.onDetach) {
   chrome.debugger.onDetach.addListener((source) => {
     if (source && source.tabId != null) {
-      state.debuggerStickyTabs.delete(source.tabId);
+      state.debuggerHolders.delete(source.tabId);
     }
   });
 }
@@ -1972,7 +1991,8 @@ if (chrome.debugger && chrome.debugger.onDetach) {
 // evaluates the expression, and detaches. Returns the expression's value.
 // Throws on any error (including eval errors inside the expression).
 async function evaluateInTab(tabId, expression) {
-  await debuggerAttach(tabId);
+  const holder = state.macroRunning ? 'macro' : 'adhoc';
+  await debuggerAttach(tabId, holder);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
     const evalResult = await chrome.debugger.sendCommand(
@@ -1992,7 +2012,7 @@ async function evaluateInTab(tabId, expression) {
     }
     return evalResult.result?.value;
   } finally {
-    await debuggerDetach(tabId);
+    await debuggerDetach(tabId, holder);
   }
 }
 
@@ -2126,7 +2146,6 @@ async function handleMacroRun(msg) {
 
   state.macroRunning = true;
   state.macroCancelRequested = false;
-  state.debuggerStickyTabs = new Set();
 
   const ctx = {
     inputs: { ...(macro.inputs || {}), ...(inputs || {}) },

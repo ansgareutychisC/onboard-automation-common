@@ -84,6 +84,11 @@ const TEST_INPUTS = {
   'submit-code': {
     code: 'XJ4K2B',
   },
+  'signup-rest': {
+    email: 'admin@priv.email',
+    mailUrl: 'https://v3-mail.priv.email/admin-8ed5b980',
+    redirectURL: '/p/mock',
+  },
 };
 
 // Per-macro mock email subjects — exercises different extraction layers:
@@ -654,8 +659,22 @@ async function runStep(step, ctx, harDb, mockState) {
     case 'form.fill':
       return { ok: true, value: resolved.value };
 
-    case 'form.eval':
+    case 'form.eval': {
+      // get-version: reads data-notion-version from the signup page
+      if ((resolved.function || '').includes('data-notion-version')) {
+        return { version: '23.13.20260824.2240' };
+      }
+      // mail-baseline: newest email id BEFORE the send
+      if ((resolved.function || '').includes("limit=1")) {
+        return { sinceId: 41 };
+      }
+      // poll-mail: the v3-mail worker polling (list + detail + extract)
+      if ((resolved.function || '').includes('/emails')) {
+        return { code: MOCK_VERIFICATION_CODE, subject: 'Your Notion signup code',
+          emailId: 42, received: '2026-08-25T07:00:00.000Z' };
+      }
       return { ok: true, clicked: true, redirected: true, url: 'https://app.notion.com/onboarding' };
+    }
 
     case 'fetch': {
       // The toy site's /api/signup + /api/verify endpoints aren't in the HAR
@@ -691,6 +710,35 @@ async function runFetchStep(step, ctx, harDb, mockState) {
   // path mirrors the real one — both contain 'priv.email').
   if (url.includes('improvmx.com') || url.includes('priv.email')) {
     return mockImprovMX(step, mockState, ctx.__macroName, ctx);
+  }
+
+  // Special case: the pure-REST Notion auth endpoints (signup-rest macro).
+  // Shapes verified live 2026-08-25 — see docs/NOTION-REST-AUTH.md.
+  if (apiPath === '/api/v3/getLoginOptions') {
+    return { ok: true, status: 200, statusText: 'OK',
+      body: JSON.stringify({ hasAccount: false, samlSignIn: 'unavailable', passwordSignIn: false,
+        mustReverify: false, loginOptionsToken: 'v02:login_options:MOCKTOKEN' }),
+      finalUrl: url, headers: {} };
+  }
+  if (apiPath === '/api/v3/sendTemporaryPassword') {
+    // verify the request carried the loginOptionsToken + deviceId
+    const b = JSON.parse(step.body || '{}');
+    if (!b.loginOptionsToken || !b.deviceId || b.email !== 'admin@priv.email') {
+      return { ok: false, status: 200, body: '{}', error: 'sendTemporaryPassword body incomplete: ' + JSON.stringify(b).slice(0, 200) };
+    }
+    return { ok: true, status: 200, statusText: 'OK',
+      body: JSON.stringify({ csrfState: 'v02:temp_password:MOCKSTATE' }),
+      finalUrl: url, headers: {} };
+  }
+  if (apiPath === '/api/v3/loginWithEmail') {
+    const b = JSON.parse(step.body || '{}');
+    if (b.state !== 'v02:temp_password:MOCKSTATE' || b.password !== MOCK_VERIFICATION_CODE) {
+      return { ok: false, status: 200, body: '{}',
+        error: 'loginWithEmail state/password mismatch: ' + JSON.stringify(b).slice(0, 200) };
+    }
+    return { ok: true, status: 200, statusText: 'OK',
+      body: JSON.stringify({ isNewSignup: true, userId: HAR_USER_ID }),
+      finalUrl: url, headers: {} };
   }
 
   // Special case: loadUserContent (not in HAR — synthesize response)

@@ -1,0 +1,166 @@
+{
+  "name": "signup-rest",
+  "service": "notion",
+  "description": "PURE REST Notion signup — zero clicks, zero form automation. Replays the web client's own auth endpoints: getLoginOptions → sendTemporaryPassword → (code read from the v3-mail worker inbox) → loginWithEmail → session cookies captured. Email must be a NAMED priv.email alias (admin@/support@/noreply@/billing@/security@) so the code email dual-delivers into the v3-mail worker where this macro can read the body. The Notion-Client-Version header is read live from the signup page (it is REQUIRED — requests without it are rejected). Verified end-to-end 2026-08-25 (see docs/NOTION-REST-AUTH.md).",
+  "inputs": {
+    "email": "admin@priv.email",
+    "mailUrl": "https://v3-mail.priv.email/admin-8ed5b980",
+    "redirectURL": "/p/3c7e9d22c27d805f8768dc3399e67455"
+  },
+  "steps": [
+    {
+      "id": "gen-ids",
+      "cmd": "eval",
+      "function": "() => { return { deviceId: crypto.randomUUID(), ts: Date.now() }; }",
+      "args": {}
+    },
+    {
+      "id": "clear-cookies",
+      "cmd": "cookies.remove",
+      "url": "https://app.notion.com"
+    },
+    {
+      "id": "open-signup",
+      "cmd": "tabs.open",
+      "url": "https://app.notion.com/signup",
+      "active": true
+    },
+    {
+      "id": "get-version",
+      "cmd": "form.eval",
+      "tabId": "{{open-signup.tabId}}",
+      "function": "() => { const v = document.documentElement.getAttribute('data-notion-version') || ''; return { version: v }; }",
+      "args": []
+    },
+    {
+      "id": "open-mail-tab",
+      "cmd": "tabs.open",
+      "url": "{{inputs.mailUrl}}",
+      "active": true
+    },
+    {
+      "id": "mail-baseline",
+      "cmd": "form.eval",
+      "tabId": "{{open-mail-tab.tabId}}",
+      "function": "return fetch('/emails?address=' + encodeURIComponent('{{inputs.email}}') + '&limit=1', { credentials: 'include' }).then(r => r.json()).then(d => ({ sinceId: ((d.results || [])[0] || {}).id || 0 }));",
+      "args": []
+    },
+    {
+      "id": "get-login-options",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/getLoginOptions",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Notion-Audit-Log-Platform": "web",
+        "Notion-Client-Version": "{{get-version.version}}"
+      },
+      "body": "{\"email\":\"{{inputs.email}}\",\"requireWorkTypeEmail\":false}",
+      "credentials": "include",
+      "timeoutMs": 20000
+    },
+    {
+      "id": "parse-login-options",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); const t = d.loginOptionsToken || ''; if (!t) return { ok: false, error: 'no loginOptionsToken in getLoginOptions response', body: (args.body || '').slice(0, 200) }; return { loginOptionsToken: t }; } catch (e) { return { ok: false, error: e.message }; } }",
+      "args": {
+        "body": "{{get-login-options.body}}"
+      }
+    },
+    {
+      "id": "send-code",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/sendTemporaryPassword",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Notion-Audit-Log-Platform": "web",
+        "Notion-Client-Version": "{{get-version.version}}"
+      },
+      "body": "{\"email\":\"{{inputs.email}}\",\"redirectURL\":\"{{inputs.redirectURL}}\",\"disableLoginLink\":false,\"native\":false,\"isSignup\":true,\"shouldHidePasscode\":false,\"loginOptionsToken\":\"{{parse-login-options.loginOptionsToken}}\",\"deviceId\":\"{{gen-ids.deviceId}}\",\"loginRouteOrigin\":\"signup\"}",
+      "credentials": "include",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "parse-state",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); const s = d.csrfState || ''; if (!s) return { ok: false, error: 'no csrfState in sendTemporaryPassword response (email may be rate-limited — wait and retry)', body: (args.body || '').slice(0, 200) }; return { state: s }; } catch (e) { return { ok: false, error: e.message }; } }",
+      "args": {
+        "body": "{{send-code.body}}"
+      }
+    },
+    {
+      "id": "get-verification-code",
+      "cmd": "retry",
+      "timeoutMs": 180000,
+      "intervalMs": 10000,
+      "condition": "result && result.code != null",
+      "steps": [
+        {
+          "id": "poll-mail",
+          "cmd": "form.eval",
+          "tabId": "{{open-mail-tab.tabId}}",
+          "function": "(args) => {\n  // Poll the v3-mail worker inbox for the newest code email, then fetch its\n  // body. Runs inside the v3-mail tab (same-origin, admin session cookie).\n  const sinceId = Number(args.sinceId) || 0;\n  return fetch('/emails?address=' + encodeURIComponent(args.email) + '&limit=3', { credentials: 'include' })\n    .then(r => r.json())\n    .then(d => {\n      const rows = (d.results || []).filter(x => x.id > sinceId && /code/i.test(x.subject || ''));\n      if (!rows.length) return { code: null, reason: 'no new code email yet' };\n      const row = rows[0];\n      return fetch('/emails/' + row.id, { credentials: 'include' })\n        .then(r => r.json())\n        .then(full => {\n          const text = (full.text_body || '').trim();\n          const m = text.match(/[A-Z0-9]{4,10}/) || (full.subject || '').match(/([A-Z0-9]{4,10})/);\n          if (!m) return { code: null, reason: 'no code in body or subject', subject: full.subject };\n          return { code: m[1], subject: full.subject, emailId: row.id, received: row.received_at };\n        });\n    })\n    .catch(e => ({ code: null, error: String(e) }));\n}",
+          "args": {
+            "email": "{{inputs.email}}",
+            "sinceId": "{{mail-baseline.sinceId}}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "log-got-code",
+      "cmd": "log",
+      "message": "Got verification code",
+      "data": {
+        "code": "{{get-verification-code.result.code}}"
+      }
+    },
+    {
+      "id": "login",
+      "cmd": "fetch",
+      "url": "https://app.notion.com/api/v3/loginWithEmail",
+      "method": "POST",
+      "headers": {
+        "Content-Type": "application/json",
+        "Notion-Audit-Log-Platform": "web",
+        "Notion-Client-Version": "{{get-version.version}}"
+      },
+      "body": "{\"state\":\"{{parse-state.state}}\",\"password\":\"{{get-verification-code.result.code}}\",\"appSource\":\"notion\",\"loginRouteOrigin\":\"signup\"}",
+      "credentials": "include",
+      "timeoutMs": 30000
+    },
+    {
+      "id": "parse-login",
+      "cmd": "eval",
+      "function": "(args) => { try { const d = JSON.parse(args.body); if (d.error) return { ok: false, error: 'loginWithEmail failed: ' + JSON.stringify(d).slice(0, 200) }; return { isNewSignup: !!d.isNewSignup, userId: d.userId || '' }; } catch (e) { return { ok: false, error: e.message }; } }",
+      "args": {
+        "body": "{{login.body}}"
+      }
+    },
+    {
+      "id": "get-cookies",
+      "cmd": "cookies.getAll",
+      "url": "https://app.notion.com"
+    },
+    {
+      "id": "extract-creds",
+      "cmd": "eval",
+      "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
+      "args": {
+        "cookies": "{{get-cookies.cookies}}"
+      }
+    },
+    {
+      "id": "final-result",
+      "cmd": "log",
+      "message": "🎉 REST signup complete — zero clicks",
+      "data": {
+        "userId": "{{extract-creds.userId}}",
+        "notionUserId": "{{parse-login.userId}}",
+        "tokenV2": "{{extract-creds.tokenV2}}",
+        "deviceId": "{{extract-creds.deviceId}}"
+      }
+    }
+  ]
+}
