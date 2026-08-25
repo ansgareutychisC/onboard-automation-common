@@ -641,6 +641,12 @@ async function runStep(step, ctx, harDb, mockState) {
     case 'cookies.remove':
       return { ok: true, removed: MOCK_COOKIES.length };
 
+    case 'storage.clear':
+      return { ok: true, origin: new URL(resolved.url).origin,
+        localStorage: { cleared: 122 }, sessionStorage: { cleared: 5 },
+        indexedDB: [{ name: 'TransactionStore', ok: true }, { name: 'statsigStore', ok: true }],
+        caches: [], closedOtherTabs: true };
+
     case 'cookies.getAll':
       return { ok: true, cookies: MOCK_COOKIES };
 

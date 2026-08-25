@@ -316,7 +316,31 @@ checks passed while the extension sat dead-stuck on the user's real signup:
    detach each other's attachments. All debugger use now goes through
    `debuggerAttach`/`debuggerDetach`.
 
-### 1.17 Don't trust commit messages that reference files that don't exist
+### 1.17 Cookies are half the logout — SPAs keep app state in localStorage/IndexedDB
+
+The todoist reference flow never needed a "clear" step: it uses a fresh
+`requests.Session()` per signup — clean state by construction. The extension
+runs in the USER's browser and inherits accumulated state, so clearing must
+be explicit. `cookies.remove` alone leaves behind (measured live on
+app.notion.com, 2026-08-25):
+- **localStorage: 122 keys** — including `lastVisitedRoute`,
+  `current-user-id` (the OLD account), sidebar state, BlockFrecency keyed
+  by old user ids. After a fresh login the app reads this and redirects to
+  the PREVIOUS user's last visited page — the "funny redirect after login"
+  the user noticed.
+- **sessionStorage: 5 keys**, **IndexedDB: 3 DBs** (Notion's
+  `TransactionStore` can queue offline transactions from a previous
+  session — dangerous under new auth), **Cache API: 2 caches** (service
+  worker).
+Fix (v0.9.3+): the `storage.clear` command wipes all four storage surfaces
+for an origin (closing other same-origin tabs first so IndexedDB handles
+release and in-memory state doesn't get written back). Every signup macro
+now runs `cookies.remove` → `storage.clear` → open page. Cookies themselves:
+`cookies.remove` also now sweeps the whole registrable domain and removes
+per (name, domain, path) — url-based removal misses host-only cookies on
+sibling subdomains and same-name duplicates across domain variants.
+
+### 1.18 Don't trust commit messages that reference files that don't exist
 
 The notion repo's commit `91b75cb` claims "All 4 macros pass (56/56 steps
 total)" and "18 pytest tests pass" — but the test scripts

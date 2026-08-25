@@ -1,335 +1,445 @@
-# SKILL-consumer.md — Check Emails from priv.email (ImprovMX)
+# SKILL-consumer.md — Read priv.email Mail Programmatically
 
-> **Purpose**: read emails sent to `*@priv.email` to extract verification codes,
-> login links, or other inbound mail content. This is a **consumer** skill — it
-> does NOT develop the mail kit, deploy anything, or modify DNS.
+> **Purpose**: read emails sent to `*@priv.email` — verification codes, login
+> links, full bodies, attachments, raw MIME — WITHOUT a browser and WITHOUT
+> touching Hotmail. This is a **consumer** skill: it reads mail, it never
+> deploys, changes DNS, or develops the kit (see `.agents/SKILL.md` for that).
 >
-> Use this when you need to "check the inbox at admin@priv.email" for a
-> verification code that a service just sent.
+> **Status of this revision (2026-08-25)**: the v3-mail worker API is
+> production-ready and is the PRIMARY access path. The ImprovMX (apex) path is
+> metadata-only via its logs API, but the named apex aliases now dual-deliver
+> into the worker (§6) — so apex mail is fully readable too.
 
-## TL;DR — quick check
+## ⚠ LIVE FINDINGS from the extension session (2026-08-25, later)
+
+Empirically verified while driving the user's browser (kept for history; a
+better query API is coming and will supersede the address-form question):
+
+1. **The address-form claim in §4.2 is INVERTED on the live deployment**: mail
+   that arrived via the ImprovMX chain (the named-alias dual delivery) is
+   stored with `to_address` = the **apex form** (`admin@priv.email`), NOT the
+   v3-mail form. Live proof (queried both forms seconds apart):
+   - `GET /emails?address=admin@priv.email` → the chained Notion code emails
+   - `GET /emails?address=admin@v3-mail.priv.email` → only the direct CF
+     verification email
+   The extension macro (`notion/signup-rest.json`) therefore queries the apex
+   form. **Query BOTH forms when in doubt.**
+2. The Bearer token was not available to the agent sandbox (redacted
+   everywhere; it lives in mail-kit deploy secrets) — reads went through the
+   user's browser admin session cookie (same-origin fetch in a v3-mail tab,
+   which must be FOCUSED or Chrome throttles background-tab fetches).
+3. Notion's code email: subject "Your Notion signup code", `text_body` is
+   literally the 6-char code + newline (`493701\n`).
+
+## 0. Which address should I check? (decision table)
+
+| Mail was sent to… | Full body programmatically? | Where to read it |
+|---|---|---|
+| `admin@`, `support@`, `noreply@`, `billing@`, `security@` `@priv.email` | **YES** — dual-delivered | v3-mail API, `?address=admin@v3-mail.priv.email` (§4) — **but see the live-finding above: today the apex form is what matches chained mail** |
+| anything `@v3-mail.priv.email` | **YES** — native worker route | v3-mail API (§4) |
+| anything `@v4-mail.priv.email` | **YES** (v4 surface) | same v3-mail API — the v4 worker shares the shape |
+| a random address via the catch-all (`*@priv.email`) | **NO** — Hotmail only | ImprovMX logs (subject/sender/status only, §5); or add a named alias that chains (§6) |
+| ANY `@priv.email` address, delivery status only | metadata | ImprovMX logs API (§5) |
+
+**Rule of thumb**: register for services with a **named** alias
+(`admin@priv.email` is the convention) — then the full email lands in the
+worker and everything below in §4 works on it. Avoid registering with
+made-up catch-all addresses; they bypass the worker.
+
+## 1. TL;DR — get the verification code from the latest admin@ email
 
 ```bash
-# List the last 20 emails received at any *@priv.email alias
+V3="https://v3-mail.priv.email"
+TOKEN="<v3-mail QUERY_API_TOKEN>"   # see §3
+
+# 1) list the latest mail for the admin alias
+ID=$(curl -sS "$V3/emails?address=admin@v3-mail.priv.email&limit=1" \
+  -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "import sys,json; r=json.load(sys.stdin)['results']; print(r[0]['id'] if r else '')")
+
+# 2) fetch the full body and extract the code
+curl -sS "$V3/emails/$ID" -H "Authorization: Bearer $TOKEN" \
+  | python3 -c "
+import sys, json, re
+d = json.load(sys.stdin)
+body = (d.get('text_body') or '') + ' ' + (d.get('html_body') or '')
+codes = re.findall(r'\b\d{4,8}\b', d.get('subject') or '') or re.findall(r'\b\d{4,8}\b', body)
+print('subject:', d.get('subject'))
+print('codes:', codes[:5])
+"
+```
+
+This works for mail sent to `admin@priv.email` AND to `admin@v3-mail.priv.email`
+— the apex alias dual-delivers into the same worker inbox (§6). *(Live-session
+note: query the apex form too — see the findings block above.)*
+
+## 2. Mail topology (as of 2026-08-25)
+
+```
+                       ┌─ Hotmail (ansgareutychis@hotmail.com)   ← unchanged, human reading
+apex *@priv.email ──▶ ImprovMX ─┤
+  (mx1/mx2.improvmx.com)        └─ admin@v3-mail.priv.email ─▶ CF Email Routing ─▶ v3 worker ─▶ D1
+                                   (named aliases only: admin,                     (THIS skill reads
+                                    support, noreply, billing,                      this via API)
+                                    security)
+
+v3-mail.priv.email ──▶ route1/2/3.mx.cloudflare.net ─▶ v3 worker ─▶ D1 (same inbox)
+v4-mail.priv.email ──▶ route1/2/3.mx.cloudflare.net ─▶ v4 worker ─▶ D1 (v4 surface)
+```
+
+Key facts:
+
+- The **v3 worker** (email-worker-v3-mail) stores every inbound email in D1:
+  parsed text/html bodies, headers, attachments, raw MIME. **90-day retention**
+  (swept daily at 03:00 UTC).
+- **ImprovMX logs** keep metadata only, 7-day retention (§5).
+- The apex catch-all (`*@priv.email` → Hotmail) deliberately does NOT chain
+  into the worker (keeps spam out of the D1 store). Only the five named
+  aliases dual-deliver (§6).
+
+## 3. Secrets (only what this skill needs)
+
+```
+v3-mail API bearer token (QUERY_API_TOKEN):  <in mail-kit deploy secrets — admin-readonly, long-lived>
+v3-mail admin path:                          admin-8ed5b980
+v3-mail admin password:                      <in mail-kit deploy secrets — only needed for cookie auth>
+ImprovMX API key:                            sk_691ff26633c94b0d80523433afe3a369
+Base URLs:                                   https://v3-mail.priv.email  (worker)
+                                             https://api.improvmx.com/v3 (ImprovMX)
+```
+
+Full generated credentials live in the mail-kit deploy secrets file
+(`deploy-secrets.json` under the `v3-mail` key) and in `/home/sync/`. Treat
+the bearer token as a secret: it can read every stored email. The ImprovMX
+key additionally can delete aliases/domains — highest sensitivity.
+
+**Auth modes on the worker**:
+1. **Bearer** (for agents/scripts): `Authorization: Bearer <QUERY_API_TOKEN>`
+   — sufficient for all READ endpoints below.
+2. **Admin session cookie** (for the SPA-only endpoints): `POST
+   /admin-8ed5b980/login` with form body `password=<admin password>` →
+   `pm_admin_session` cookie. `SameSite=Strict`, `HttpOnly`.
+
+## 4. The v3-mail API — PRIMARY path (full email data)
+
+### 4.1 Endpoint auth matrix
+
+**Bearer token works** (use these from scripts):
+
+| Endpoint | What it returns |
+|---|---|
+| `GET /emails?address=<addr>&limit=&before=&include_body=` | paginated list per recipient |
+| `GET /emails/:id` | full detail: `text_body`, `html_body`, parsed `headers`, `proxy_token` |
+| `GET /emails/:id/raw` | the exact original MIME bytes (`message/rfc822`) |
+| `GET /emails/:id/attachments` | attachment metadata list |
+| `GET /emails/:id/attachments/:attId` | one attachment's metadata |
+| `GET /emails/:id/attachments/:attId/download` | attachment bytes |
+| `DELETE /emails/:id` | soft delete (`?permanent=true` → hard delete) |
+| `GET /emails/:id/proxy?url=…&t=…` | remote-image proxy (needs the scoped `t` token, see 4.6) |
+
+**Admin cookie required** (browser/SPA things — rarely needed by agents):
+
+`GET /emails/all` (cross-recipient list + `q` search), `GET /emails/unread-count`,
+`GET /events` (SSE), `GET /recipients`, `GET /emails/threads`, `GET
+/emails/stats`, `GET /emails/export`, `GET|PATCH /admin/config`, `PATCH
+/emails/:id` (read/star), `POST /emails/:id/reply|forward|restore`, `POST
+/emails/send`, `POST /emails/mark-all-read`.
+
+*(Live-session note: the admin session cookie ALSO authenticates the bearer
+endpoints — that's how the extension macro reads mail today.)*
+
+### 4.2 List mail for an address
+
+```
+GET /emails?address=admin@v3-mail.priv.email&limit=20[&include_body=true][&before=<cursor>]
+Authorization: Bearer <TOKEN>
+```
+
+Response (trimmed):
+
+```json
+{
+  "results": [
+    {
+      "id": 2,
+      "from_address": "bounces-imx+…@bounces.improvmx.net",   // ⚠ envelope, SRS-rewritten (§4.5)
+      "from_header": "admin@priv.email",                       // ← the REAL sender
+      "to_address": "admin@v3-mail.priv.email",
+      "subject": "Chained forwarding test: …",
+      "received_at": "2026-08-25T06:10:12.000Z",
+      "raw_size": 8544, "has_attachments": 0, "is_read": 0, "is_starred": 0
+    }
+  ],
+  "nextCursor": null, "count": 1, "include_body": false
+}
+```
+
+- `address` is **required** (400 without it). It matches the stored
+  `to_address` — the doc says use the **v3-mail form**, but the 2026-08-25
+  live session measured chained mail stored under the **apex form**
+  (`to_address = admin@priv.email`). **Query both forms** until the coming
+  query-API unifies them.
+- `include_body=true` adds `text_body`/`html_body` to every row (heavier).
+- Pagination: pass `nextCursor` back as `?before=<cursor>`.
+- `limit` default 50, clamped to 1–500.
+
+### 4.3 Read one email (full body)
+
+```
+GET /emails/:id
+```
+
+Always includes `text_body`, `html_body`, parsed `headers` (JSON object:
+`from`, `subject`, `authentication-results`, …), `proxy_token` (scoped,
+2h image-proxy token), and flags. `raw_mime` is NOT included — use `/raw`.
+
+### 4.4 Raw MIME + attachments
+
+```bash
+# exact original message (headers + bodies + attachments, as received)
+curl -sS "$V3/emails/$ID/raw" -H "Authorization: Bearer $TOKEN" -o msg.eml
+
+# list attachments, then download one
+curl -sS "$V3/emails/$ID/attachments" -H "Authorization: Bearer $TOKEN"
+curl -sS "$V3/emails/$ID/attachments/3/download" -H "Authorization: Bearer $TOKEN" -o file.pdf
+```
+
+### 4.5 ⚠ SRS gotcha: `from_address` vs `from_header`
+
+Mail that arrived through the ImprovMX chain has an **SRS-rewritten envelope
+sender** (`bounces-imx+…@bounces.improvmx.net`) — that's `from_address`. The
+real originator is in `from_header` (list rows) and `headers.from` (detail).
+**Filter by sender using `from_header`-style values, never `from_address`.**
+Mail that arrived directly at `@v3-mail` has a normal envelope sender.
+
+### 4.6 Search — where `q` works
+
+`GET /emails` does **not** support `q` (it's silently ignored). Full-text
+`q` search lives on the admin-cookie endpoints (`/emails/all`,
+`/emails/export` — which also support `unread`, `starred`, `trashed`,
+`since`, `until`). For bearer-only access, filter client-side over the
+paginated list — the store is small (90-day retention).
+
+### 4.7 Remote images in HTML bodies
+
+`html_body` contains the sender's original remote image URLs. The UI loads
+them through `GET /emails/:id/proxy?url=<encoded>&t=<proxy_token>` — the
+`t` token comes from the detail response (2h, scoped to that email). For
+code/link extraction you rarely need images at all.
+
+### 4.8 Limits + retention
+
+- **Retention**: 90 days (cron sweep 03:00 UTC; configurable via
+  `/admin/config` `retention_days`, 0 = keep forever).
+- **Rate limiting**: none configured on v3-mail (the rate-limiter binding is
+  not bound) — still, poll sanibly (≥5s).
+- **Message size**: CF Email Routing caps inbound at 25 MiB; raw MIME over
+  1.5 MB needs the R2 bucket (not bound on this deployment — such mail is
+  rejected with a logged error).
+
+### 4.9 Admin-cookie login (when you DO need the cookie endpoints)
+
+```bash
+curl -sS -c cookies.txt -X POST "https://v3-mail.priv.email/admin-8ed5b980/login" \
+  -d "password=<ADMIN_PASSWORD>"
+# then:
+curl -sS -b cookies.txt "https://v3-mail.priv.email/emails/all?q=github&limit=10"
+```
+
+Sending mail (`POST /emails/send`, admin cookie) goes out via the Resend
+transport (DKIM-signed `priv.email`). See `.agents/SKILL.md` §11 for the
+Resend specifics — sending is out of scope for this consumer skill.
+
+## 5. The ImprovMX logs API — apex metadata (NO bodies)
+
+**Confirmed against the full ImprovMX v3 API surface (2026-08-25)**: the logs
+endpoints return `subject`, `sender`, `recipient`, `forward`, `events`,
+`messageId`, `hostname`, `transport` — **and nothing else. There is no API
+endpoint that returns a received email's body, HTML, or raw MIME.**
+`GET /logs/:id` and `GET /logs/search` return the same metadata shape. The
+body exists only where it was forwarded to (Hotmail, or the worker via the
+§6 chain).
+
+```
+GET https://api.improvmx.com/v3/domains/priv.email/logs?take=20      (list)
+GET https://api.improvmx.com/v3/domains/priv.email/logs/:id          (single — metadata)
+GET https://api.improvmx.com/v3/domains/priv.email/logs/search?q=…   (search)
+Auth: -u "api:sk_691ff26633c94b0d80523433afe3a369" (HTTP Basic)
+```
+
+What the logs ARE good for:
+- **Delivery forensics** — `events[]` shows the SMTP conversation
+  (`QUEUED` → `DELIVERED`/`DEFERRED`/`BOUNCED`) per destination. This is
+  the authoritative answer to "did the email even arrive?" for ANY apex
+  address.
+- **Subject-line codes** — many services put the code in the subject; the
+  logs surface it within seconds.
+- **Catch-all visibility** — mail to random `*@priv.email` addresses shows
+  up here (bodies remain Hotmail-only).
+
+Limits: 7-day retention, ~10 req/min on logs (300 req/5min account-wide),
+`take` max 100.
+
+```bash
 curl -sS -u "api:sk_691ff26633c94b0d80523433afe3a369" \
   "https://api.improvmx.com/v3/domains/priv.email/logs?take=20" \
   | python3 -c "
 import sys, json, datetime
-d = json.load(sys.stdin)
-for log in d.get('logs', []):
-    ts = datetime.datetime.fromtimestamp(log['created']/1000, tz=datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
-    print(f'[{ts}] from={log[\"sender\"][\"email\"]} to={log[\"recipient\"][\"email\"]}')
-    print(f'  subject: {log.get(\"subject\", \"(none)\")[:120]}')
-    print(f'  forward_to: {log[\"forward\"][\"email\"]}  delivered: {any(e[\"status\"]==\"DELIVERED\" for e in log.get(\"events\",[]))}')
-    print()
+for log in json.load(sys.stdin).get('logs', []):
+    ts = datetime.datetime.fromtimestamp(log['created']/1000, tz=datetime.timezone.utc)
+    ev = [e['status'] for e in log.get('events', [])]
+    print(f'[{ts:%Y-%m-%d %H:%M:%SZ}] {log[\"sender\"][\"email\"]} → {log[\"recipient\"][\"email\"]} {ev}')
+    print(f'   {log.get(\"subject\", \"(none)\")[:110]}')
 "
 ```
 
-The output gives you sender, recipient, subject, delivery status. If a subject
-contains the verification code, you're done — copy it out. If the code is in
-the body (not the subject), see **§4 — Getting the body** below.
+## 6. The apex→worker chain (how named aliases get full-body access)
 
-## 1. What this skill does NOT cover
-
-- Deploying or modifying the mail kit (see `.agents/SKILL.md` for that)
-- Sending email outbound (ImprovMX free plan cannot send — `daily_send=0`)
-- Reading mail from the Hotmail inbox directly (we use ImprovMX's log API
-  instead, which is faster and avoids Hotmail's Junk folder routing)
-- Anything related to privatimail.com (the original v3 deployment, now
-  blocked by Notion and other services after too many tests)
-
-## 2. Setup — the priv.email mail flow
+**Configured + live-verified 2026-08-25.** The five named apex aliases
+dual-deliver — ImprovMX forwards to BOTH Hotmail AND `admin@v3-mail.priv.email`
+(the worker's CF Email Routing MX takes it from there):
 
 ```
-sender ─SMTP─▶ mx1/mx2.improvmx.com ─forward─▶ ansgareutychis@hotmail.com
-                       │
-                       └─also logs─▶ ImprovMX API (this skill reads this)
+admin@priv.email     → ansgareutychis@hotmail.com, admin@v3-mail.priv.email
+support@priv.email   → ansgareutychis@hotmail.com, admin@v3-mail.priv.email
+noreply@priv.email   → ansgareutychis@hotmail.com, admin@v3-mail.priv.email
+billing@priv.email   → ansgareutychis@hotmail.com, admin@v3-mail.priv.email
+security@priv.email  → ansgareutychis@hotmail.com, admin@v3-mail.priv.email
+*@priv.email (catch-all) → ansgareutychis@hotmail.com   (NOT chained, by design)
 ```
 
-**All 6 active aliases** (each forwards to `ansgareutychis@hotmail.com`):
-- `admin@priv.email`
-- `support@priv.email`
-- `noreply@priv.email`
-- `billing@priv.email`
-- `security@priv.email`
-- `*@priv.email` (catch-all — anything else @priv.email)
+Properties (all verified with a live round-trip test):
 
-When you register for a service using one of these addresses, the service
-sends an email to that address → ImprovMX receives it on `mx1/mx2.improvmx.com`
-→ ImprovMX forwards to Hotmail AND logs the email (subject, sender, events).
-**The ImprovMX log API is the source of truth** — use it, not Hotmail.
+- **Hotmail delivery is unchanged** (comma-separated = fan-out to both).
+- The worker receives the full email — bodies, attachments, raw MIME —
+  readable via §4. Round-trip latency ≈ 10–25s (Resend → ImprovMX → worker).
+- Free-plan limit: 5 destinations per alias (we use 2).
+- Envelope sender is SRS-rewritten by ImprovMX (§4.5 gotcha applies).
 
-## 3. Secrets (only what's needed for this skill)
-
-```
-ImprovMX API key:  sk_691ff26633c94b0d80523433afe3a369
-Domain:            priv.email
-```
-
-**Auth**: HTTP Basic — `username: "api"`, `password: <api_key>`. The full
-Authorization header is:
-
-```
-Authorization: Basic base64("api:sk_691ff26633c94b0d80523433afe3a369")
-```
-
-In curl: `-u "api:sk_691ff26633c94b0d80523433afe3a369"`.
-
-## 4. API endpoints you'll use
-
-### List recent emails (subject + sender + delivery status)
-
-```
-GET https://api.improvmx.com/v3/domains/priv.email/logs?take=20
-```
-
-Query params:
-- `take=N` — number of logs to return (max 100, default 50)
-- `skip=0` — pagination offset
-
-**Response shape** (truncated to the useful fields):
-
-```json
-{
-  "success": true,
-  "logs": [
-    {
-      "created": 1787615086101,        // epoch ms
-      "subject": "Your verification code is 123456",
-      "sender": { "email": "noreply@example.com", "name": null },
-      "recipient": { "email": "admin@priv.email", "name": null },
-      "forward": { "email": "ansgareutychis@hotmail.com", "name": null },
-      "events": [
-        { "status": "QUEUED",   "code": 250, "message": "2.0.0 Email queued for forwarding." },
-        { "status": "DELIVERED", "code": 250, "message": "2.6.0 ... Queued mail for delivery -> 250 2.1.5" }
-      ],
-      "messageId": "<...@example.com>",
-      "id": "20260824234447.a5e7125e31ca4b4891b74e4ed95151a2"
-    }
-  ]
-}
-```
-
-**Note on delivery status**:
-- `DELIVERED` = ImprovMX successfully handed off to Hotmail's MX. It does
-  NOT mean it landed in inbox — Hotmail's spam filter often routes
-  ImprovMX-forwarded mail to **Junk**. Always check the ImprovMX log API,
-  not Hotmail, when looking for a verification code.
-- `QUEUED` only = ImprovMX received the email but hasn't completed forwarding
-  yet. Wait 10-30s and re-query.
-- `BOUNCED` / `DEFERRED` = delivery issue; check the `events[]` `message`
-  field for the SMTP response from Hotmail.
-
-### Filter by alias (recipient)
-
-The API doesn't support server-side filtering by recipient, but you can
-filter client-side. To find emails sent to `admin@priv.email` only:
+**To chain another alias** (e.g. you want `foo@priv.email` readable):
 
 ```bash
-curl -sS -u "api:sk_691ff26633c94b0d80523433afe3a369" \
-  "https://api.improvmx.com/v3/domains/priv.email/logs?take=50" \
-  | python3 -c "
+curl -sS -X PUT "https://api.improvmx.com/v3/domains/priv.email/aliases/foo" \
+  -u "api:sk_691ff26633c94b0d80523433afe3a369" -H "Content-Type: application/json" \
+  -d '{"forward": "ansgareutychis@hotmail.com,admin@v3-mail.priv.email"}'
+# (POST with the same body creates the alias if it doesn't exist — 25 slots, 6 used)
+```
+
+**Alternative for custom receivers — ImprovMX webhook destinations**: an
+alias `forward` may also contain an `https://` URL; ImprovMX POSTs a JSON
+payload per email (`text`, `html`, base64 `attachments[]`, parsed headers,
+and with `?raw_mime=true` the full original MIME base64-encoded). Retries:
+2 extra attempts on non-2xx, from static IP `15.237.103.194`. We don't use
+this (the SMTP chain already feeds our worker), but it's the escape hatch
+if you want full apex mail delivered to any HTTP endpoint without the
+worker.
+
+## 7. Practical patterns
+
+### Pattern A — "get the code from the latest admin@ email"
+
+See §1. Poll variant (every 10s for 2 min):
+
+```bash
+for i in $(seq 1 12); do
+  OUT=$(curl -sS "$V3/emails?address=admin@v3-mail.priv.email&limit=1" \
+        -H "Authorization: Bearer $TOKEN" \
+        | python3 -c "
 import sys, json
-d = json.load(sys.stdin)
-for log in d.get('logs', []):
-    if log['recipient']['email'] == 'admin@priv.email':
-        print(f'{log[\"subject\"]} (from {log[\"sender\"][\"email\"]})')
-"
-```
-
-### Get a single email's full body
-
-**Important limitation**: the ImprovMX `/logs` endpoint returns metadata
-(subject, sender, recipient, events) but NOT the email body. If the
-verification code is in the body rather than the subject, you have two
-options:
-
-1. **Check Hotmail directly** — log into `ansgareutychis@hotmail.com` (you
-   need the Hotmail account password, which is NOT in this skill — the user
-   must check manually). Remember to check the **Junk folder** first.
-2. **Use the email's `messageId`** to correlate with Hotmail's inbox via
-   IMAP/Graph API (requires Hotmail credentials — out of scope here).
-
-**Practical tip**: most verification code emails put the code in the subject
-line (e.g., `"Your code is 123456"` or `"123456 is your verification code"`).
-Check the subject first — it's usually enough.
-
-### Get domain verification status (sanity check)
-
-```
-GET https://api.improvmx.com/v3/domains/priv.email
-```
-
-Returns `{ domain: { active: true/false, ... } }`. If `active: false`,
-ImprovMX's own verification check hasn't passed — but forwarding still
-works (it's just ImprovMX's internal status flag).
-
-## 5. Practical patterns
-
-### Pattern A: "I just registered at service X with admin@priv.email — get the code"
-
-```bash
-# Wait ~10s for the email to arrive, then:
-curl -sS -u "api:sk_691ff26633c94b0d80523433afe3a369" \
-  "https://api.improvmx.com/v3/domains/priv.email/logs?take=3" \
-  | python3 -c "
-import sys, json, datetime, re
-d = json.load(sys.stdin)
-now = datetime.datetime.now(datetime.timezone.utc)
-for log in d.get('logs', []):
-    ts = datetime.datetime.fromtimestamp(log['created']/1000, tz=datetime.timezone.utc)
-    age_sec = (now - ts).total_seconds()
-    if age_sec < 120:  # last 2 minutes
-        print(f'[{int(age_sec)}s ago] from={log[\"sender\"][\"email\"]}')
-        print(f'  subject: {log[\"subject\"]}')
-        # extract 4-8 digit codes from subject
-        codes = re.findall(r'\\b\\d{4,8}\\b', log['subject'])
-        if codes:
-            print(f'  codes found: {codes}')
-"
-```
-
-### Pattern B: "Poll until the email arrives"
-
-```bash
-# Poll every 10s for up to 2 minutes
-for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
-  echo "--- attempt $i ---"
-  curl -sS -u "api:sk_691ff26633c94b0d80523433afe3a369" \
-    "https://api.improvmx.com/v3/domains/priv.email/logs?take=1" \
-    | python3 -c "
-import sys, json, datetime
-d = json.load(sys.stdin)
-if d.get('logs'):
-    log = d['logs'][0]
-    ts = datetime.datetime.fromtimestamp(log['created']/1000, tz=datetime.timezone.utc)
-    age = (datetime.datetime.now(datetime.timezone.utc) - ts).total_seconds()
-    print(f'latest: {int(age)}s ago — {log[\"subject\"][:80]}')
-"
+r = json.load(sys.stdin)['results']
+print(f'{r[0][\"id\"]} {r[0][\"received_at\"]} {r[0][\"subject\"]}' if r else '')")
+  [ -n "$OUT" ] && { echo "$OUT"; break; }
   sleep 10
 done
 ```
 
-### Pattern C: "Find a specific sender's email"
+### Pattern B — "did the email arrive at all?" (apex, any address)
+
+Use the ImprovMX logs (§5) — delivery status for catch-all addresses too.
+`DELIVERED` = handed to the destination MX (Hotmail landing in Junk is
+normal — ImprovMX's forwarder signature breaks SPF alignment).
+
+### Pattern C — "find mail from a specific sender"
 
 ```bash
-curl -sS -u "api:sk_691ff26633c94b0d80523433afe3a369" \
-  "https://api.improvmx.com/v3/domains/priv.email/logs?take=50" \
+curl -sS "$V3/emails?address=admin@v3-mail.priv.email&limit=50" \
+  -H "Authorization: Bearer $TOKEN" \
   | python3 -c "
 import sys, json
-sender_filter = 'noreply@github.com'  # change me
-d = json.load(sys.stdin)
-for log in d.get('logs', []):
-    if sender_filter in log['sender']['email']:
-        print(f'  {log[\"subject\"]}')
-        print(f'    from: {log[\"sender\"][\"email\"]}')
-        print(f'    to:   {log[\"recipient\"][\"email\"]}')
-"
+for r in json.load(sys.stdin)['results']:
+    if 'github' in (r.get('from_header') or '').lower():
+        print(r['id'], r['received_at'], r['subject'][:80])"
 ```
 
-## 6. Common failure modes
-
-| Symptom | Cause | Fix |
-|---------|-------|-----|
-| `{"code":401,"error":"Authentication required"}` | Wrong API key / wrong Basic Auth format | Use `-u "api:sk_691ff26633c94b0d80523433afe3a369"` in curl (username `api`, password = the key) |
-| `{"code":404,"error":"Not found."}` | Wrong domain in URL | URL must be `/v3/domains/priv.email/logs` (not `/v3/logs/priv.email`) |
-| Logs show `QUEUED` but not `DELIVERED` after 30s | Hotmail MX is slow / greylisting | Wait 1-2 min and re-query. The email is in ImprovMX's queue — it WILL be delivered. |
-| Logs show `DELIVERED` but no code visible in subject | Code is in the email body, not subject | Either extract via Hotmail IMAP (out of scope) or look at the email's plaintext body via ImprovMX dashboard (https://app.improvmx.com) |
-| No new logs at all after triggering a send | Email hasn't reached ImprovMX yet — sender's MTA may be slow / blocked | Verify sender actually sent it. Check DNS: `curl -sS "https://dns.google/resolve?name=priv.email&type=MX"` should return mx1/mx2.improvmx.com |
-| Logs older than expected | ImprovMX free plan retains logs for **7 days only** (`email_log_retention_days: 7`) | If you need older mail, check Hotmail directly (Junk folder) |
-| Rate limit (HTTP 429) | ImprovMX free plan: 300 req/5min, 10 req/min on /logs endpoint | Add `sleep 5` between polls; don't hammer the API |
-
-## 7. Rate limits (free plan)
-
-From the account response (`GET /v3/account`):
-
-- **API rate limit**: 300 requests / 5 min (account-wide)
-- **Log endpoint**: ~10 req / min (empirical — back off if 429)
-- **Log retention**: 7 days (`email_log_retention_days: 7`)
-- **Aliases**: 25 max (currently using 6)
-- **Domains**: 1 max (priv.email)
-- **Daily receive quota**: 500 emails/day
-
-**Practical guidance**: when polling for a verification code, poll every
-10s (not faster). The email usually arrives within 5-30s of the sender
-triggering it. If you don't see it after 2 min, the sender likely had an
-issue — verify with the sender's side.
-
-## 8. What you should NOT do
-
-- **Don't try to send email** — ImprovMX free plan has `daily_send=0`. For
-  outbound, use Resend (see `.agents/SKILL.md` for Resend integration).
-- **Don't modify aliases or domain settings** — this is a consumer skill.
-  Use `mail-kit teardown` / `mail-kit apply` if you need to change the setup.
-- **Don't rely on Hotmail's inbox** — ImprovMX forwards using its own sender
-  signature, so SPF alignment fails and Hotmail routes most forwarded mail
-  to **Junk**. Use the ImprovMX log API instead.
-- **Don't query logs older than 7 days** — they're gone (free plan
-  retention). If you need a permanent record, copy them to your own storage.
-- **Don't share the API key** — it has full account access (can delete
-  aliases, delete the domain, etc.). Treat it as a secret.
-
-## 9. Quick reference
+### Pattern D — "download an attachment"
 
 ```bash
-# ImprovMX API base
-API_BASE="https://api.improvmx.com/v3"
-AUTH="api:sk_691ff26633c94b0d80523433afe3a369"
-DOMAIN="priv.email"
-
-# Recent emails
-curl -sS -u "$AUTH" "$API_BASE/domains/$DOMAIN/logs?take=20"
-
-# Domain status (verification flag)
-curl -sS -u "$AUTH" "$API_BASE/domains/$DOMAIN"
-
-# List aliases
-curl -sS -u "$AUTH" "$API_BASE/domains/$DOMAIN/aliases"
-
-# DNS check (Google DoH — no dig needed)
-curl -sS "https://dns.google/resolve?name=$DOMAIN&type=MX"
+curl -sS "$V3/emails/$ID/attachments" -H "Authorization: Bearer $TOKEN"   # get attId
+curl -sS "$V3/emails/$ID/attachments/$ATTID/download" \
+  -H "Authorization: Bearer $TOKEN" -o attachment.bin
 ```
 
-## 10. Integration with the onboard-automation extension
+## 8. Failure modes
 
-When writing a macro that needs to poll for a verification email at
-`*@priv.email`, use the ImprovMX `/logs` endpoint (NOT the old
-`mail-api.privatimail.com` worker). The macro's `extractionJs` should:
+| Symptom | Cause | Fix |
+|---|---|---|
+| v3-mail `{"error":"Unauthorized"}` on bearer | Wrong/expired QUERY_API_TOKEN | Use the token from deploy secrets; header must be exactly `Authorization: Bearer <token>` |
+| v3-mail 401 on `/emails/all`, `/emails/unread-count`, `/emails/export`, … | Admin-cookie-only endpoints | Login flow in §4.9, or stick to the bearer endpoints |
+| v3-mail `{"error":"address query param required"}` | Missing `address` on `/emails` | Always pass `?address=<recipient>` |
+| Chained apex mail not in the worker | Alias not dual-destination yet, or <30s since send | Check alias config (§6); wait — chain latency is 10–25s |
+| Chained mail not matching `address=` | **Queried the v3-mail form but mail stored under the apex form (live finding, top of this doc)** | Query BOTH forms |
+| Apex mail in ImprovMX logs but `BOUNCED`/`DEFERRED` events | Destination rejected | Read `events[].message` — the SMTP response tells you which leg failed |
+| `DELIVERED` in logs but nothing in Hotmail | Hotmail Junk folder | Normal for forwarded mail (SPF alignment) — check Junk |
+| Search `q=` returns everything on `/emails` | `q` is ignored on `/emails` (§4.6) | Use admin-cookie `/emails/all?q=…`, or filter client-side |
+| Sender filter matches nothing | Used `from_address` (SRS-rewritten) | Filter on `from_header` / detail `headers.from` (§4.5) |
+| Old mail gone from worker | 90-day retention sweep | Export via admin-cookie `/emails/export` if needed |
+| Old logs gone from ImprovMX | 7-day log retention (free plan) | The worker store is the durable copy |
+| ImprovMX 429 | ~10 req/min on logs | Sleep ≥5s between polls |
 
-1. `fetch` the `/logs?take=5` endpoint with the `Authorization: Basic` header
-2. Parse the JSON response, filter by recipient + age
-3. Extract the code from the **subject** first (most common)
-4. Fall back to body parsing only if the subject has no code (requires
-   Hotmail access — out of scope for the macro)
+## 9. Rate limits + retention summary
 
-Example extraction JS for a Notion-style 6-char alphanumeric code in the
-subject:
+| Surface | Retention | Rate limit |
+|---|---|---|
+| v3-mail API (D1 store) | 90 days (configurable) | none configured — poll ≥5s out of courtesy |
+| ImprovMX logs | 7 days | ~10 req/min (logs), 300 req/5min account-wide |
+| ImprovMX forwarding quota | — | 500 received emails/day (free plan) |
 
-```js
-(args) => {
-  const data = JSON.parse(args.body);
-  const logs = data.logs || [];
-  const sinceMs = args.sinceMs || 0;
-  for (const log of logs) {
-    if (sinceMs && log.created < sinceMs) continue;
-    if (args.recipient && log.recipient.email !== args.recipient) continue;
-    const subj = log.subject || '';
-    // Notion: "Your login code is ABC123" or "ABC123 is your verification code"
-    const m = subj.match(/([0-9A-Za-z]{6})\s+is\s+your|your\s+(?:login\s+)?code\s+is\s+([0-9A-Za-z]{6})/i);
-    if (m) return { code: m[1] || m[2], source: 'improvmx-subject', logId: log.id };
-  }
-  return { code: null, source: 'not-found', logCount: logs.length };
-}
+## 10. What NOT to do
+
+- **Don't register with random catch-all addresses** (`foo@priv.email`) if you
+  need programmatic body access — use a named alias (or chain a new one, §6).
+- **Don't try to fetch bodies from ImprovMX** — no such endpoint exists
+  (confirmed §5). The chain (§6) is the supported route.
+- **Don't use `from_address` for sender filtering** on chained mail — it's
+  the SRS bounce address (§4.5).
+- **Don't send mail with the ImprovMX key** — free plan `daily_send=0`;
+  outbound goes through the worker's Resend transport (§4.9).
+- **Don't leak the bearer token or the ImprovMX key** — one reads all mail,
+  the other can delete the domain.
+- **Don't delete emails casually** — `DELETE /emails/:id?permanent=true` is
+  irreversible and the worker store is the only durable copy past 7 days.
+
+## 11. Quick reference
+
+```bash
+V3="https://v3-mail.priv.email"
+T="Authorization: Bearer <v3-mail QUERY_API_TOKEN>"
+IMX="api:sk_691ff26633c94b0d80523433afe3a369"
+
+# --- v3-mail worker (full data) ---
+curl -sS "$V3/emails?address=admin@v3-mail.priv.email&limit=20" -H "$T"   # list
+curl -sS "$V3/emails?address=admin@priv.email&limit=20" -H "$T"           # list (apex form — live finding)
+curl -sS "$V3/emails/42"                       -H "$T"                    # full body
+curl -sS "$V3/emails/42/raw"                   -H "$T" -o msg.eml        # raw MIME
+curl -sS "$V3/emails/42/attachments"           -H "$T"                    # attachments
+# admin-cookie endpoints: login first (§4.9)
+
+# --- ImprovMX (apex metadata, any address) ---
+curl -sS -u "$IMX" "https://api.improvmx.com/v3/domains/priv.email/logs?take=20"
+curl -sS -u "$IMX" "https://api.improvmx.com/v3/domains/priv.email/logs/search?q=github"
+curl -sS -u "$IMX" "https://api.improvmx.com/v3/domains/priv.email/aliases"
+
+# --- DNS sanity (Google DoH) ---
+curl -sS "https://dns.google/resolve?name=priv.email&type=MX"             # apex → improvmx
+curl -sS "https://dns.google/resolve?name=v3-mail.priv.email&type=MX"    # worker → cloudflare
 ```
-
-**Important**: the macro `inputs` must include:
-- `emailWorkerUrl`: `https://api.improvmx.com/v3/domains/priv.email/logs?take=20`
-  (the full inbox endpoint — the shared email chunk fetches it verbatim)
-- `emailWorkerToken`: `api:sk_691ff26633c94b0d80523433afe3a369` (raw Basic pair —
-  the chunk's `email-auth` step base64-encodes it into the Authorization header;
-  a ready-made `Basic ...`/`Bearer ...` header value also works)
-- `email`: the specific alias used (e.g. `admin@priv.email`)
-
-The popup's **Email & Storage config panel** (IMPLEMENTED) has fields for
-`emailWorkerUrl` + `emailWorkerToken` — configure once, and every email-flow
-preset pre-fills and runs with them (per-run inputs still win if set).

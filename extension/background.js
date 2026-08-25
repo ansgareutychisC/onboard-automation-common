@@ -1182,6 +1182,9 @@ async function handleCommand(msg) {
       case 'cookies.remove':
         await handleCookiesRemove(msg);
         break;
+      case 'storage.clear':
+        await handleStorageClear(msg);
+        break;
       case 'eval':
         await handleEval(msg);
         break;
@@ -1862,37 +1865,188 @@ async function handleCookiesSet(cmd) {
 
 async function handleCookiesRemove(cmd) {
   const { id, url, names } = cmd;
-  // If names is specified, remove only those; otherwise remove ALL cookies for the url
-  let toRemove = [];
-  if (names && Array.isArray(names) && names.length > 0) {
-    toRemove = names;
-  } else {
-    const all = await chrome.cookies.getAll({ url });
-    toRemove = all.map(c => c.name);
+  // If names is specified, remove only those; otherwise remove ALL cookies
+  // for the url's WHOLE registrable domain (subdomains included) — a url
+  // only clear misses host-only cookies on sibling subdomains (e.g.
+  // www.notion.com when the url is app.notion.com) and same-name cookies
+  // on multiple domain variants.
+  let cookies = [];
+  try {
+    const u = new URL(url);
+    // eTLD+1 by dropping the leftmost label (good enough for our targets;
+    // the public suffix list isn't available in the SW).
+    const parts = u.hostname.split('.');
+    const registrable = parts.length > 2 ? parts.slice(-2).join('.') : u.hostname;
+    cookies = await chrome.cookies.getAll({ domain: registrable });
+  } catch (e) {
+    // fall back to plain url matching
+    cookies = await chrome.cookies.getAll({ url });
   }
+  const wanted = (names && Array.isArray(names) && names.length > 0)
+    ? new Set(names) : null;
   let removed = 0;
   const errors = [];
-  for (const name of toRemove) {
+  const seen = new Set();
+  for (const c of cookies) {
+    if (wanted && !wanted.has(c.name)) continue;
+    // One removal per (name, domain, path) — construct the exact URL the
+    // cookie is scoped to, so duplicates across domain variants each die.
+    const key = `${c.name}|${c.domain}|${c.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const host = c.domain.startsWith('.') ? c.domain.slice(1) : c.domain;
+    const scheme = c.secure ? 'https' : 'http';
+    const cookieUrl = `${scheme}://${host}${c.path || '/'}`;
     try {
-      // chrome.cookies.remove needs url + name. For httpOnly cookies we
-      // may need to use the cookie's actual domain+path, but the url-based
-      // form works for most cases.
-      const success = await chrome.cookies.remove({ url, name });
+      const success = await chrome.cookies.remove({ url: cookieUrl, name: c.name });
       if (success) removed++;
     } catch (e) {
-      errors.push({ name, error: e.message });
+      errors.push({ name: c.name, error: e.message });
     }
   }
-  log('debug', 'cookies.remove', { id, url, requested: toRemove.length, removed, errors: errors.length });
+  log('debug', 'cookies.remove', { id, url, requested: seen.size, removed, errors: errors.length });
   capture('cookies.remove', {
     url,
-    requested: toRemove.length,
+    requested: seen.size,
     removed,
-    names: toRemove,
+    names: [...seen].map(s => s.split('|')[0]),
     errors: errors.length,
     ok: errors.length === 0,
   }, { id });
   sendResult(id, { ok: true, removed, errors });
+}
+
+// ---------------------------------------------------------------------------
+// Command: storage.clear — wipe origin-scoped browser storage.
+//
+// The missing half of cookies.remove: SPAs persist app state in
+// localStorage (Notion: lastVisitedRoute, current-user-id, sidebar state,
+// BlockFrecency keyed by OLD user ids...), sessionStorage, IndexedDB
+// (Notion's TransactionStore can queue offline transactions from a previous
+// session!), and the Cache API. Cookies alone leave all of that behind —
+// after a fresh login the app reads the stale state and, e.g., redirects to
+// the PREVIOUS user's last visited page.
+//
+// Args:
+//   url                (required) any URL on the origin to clear
+//   clearLocalStorage  (default true)
+//   clearSessionStorage(default true)
+//   clearIndexedDB     (default true)  — best-effort: open connections in
+//                        OTHER tabs block deletion; close them first
+//   clearCaches        (default true)
+//   closeOtherTabs     (default true)  — close OTHER tabs on the same
+//                        origin first so IndexedDB handles are released
+//
+// Runs in a tab on the target origin (opens one if none exists, closes it
+// afterwards if it opened it). Storage APIs are origin-scoped, so the
+// isolated world is fine — no debugger needed.
+// ---------------------------------------------------------------------------
+
+async function handleStorageClear(cmd) {
+  const {
+    id, url,
+    clearLocalStorage = true, clearSessionStorage = true,
+    clearIndexedDB = true, clearCaches = true,
+    closeOtherTabs = true,
+  } = cmd;
+  const startTime = Date.now();
+
+  try {
+    const parsed = new URL(url);
+    const origin = parsed.origin;
+
+    // Find or open a tab on this origin. Prefer the tab the caller's macro
+    // is about to use (or already has open).
+    let tabs = await chrome.tabs.query({ url: `${origin}/*` });
+    let openedTab = null;
+    if (!tabs.length) {
+      openedTab = await chrome.tabs.create({ url, active: false });
+      tabs = [openedTab];
+      // wait for the tab to be on the origin (about:blank → navigation)
+      for (let i = 0; i < 40; i++) {
+        await new Promise(r => setTimeout(r, 250));
+        const t = await chrome.tabs.get(openedTab.id);
+        if (t.url && t.url.startsWith(origin)) break;
+      }
+    }
+
+    // Close OTHER tabs on the same origin (they hold IndexedDB handles and
+    // will also write localStorage back from their in-memory state).
+    if (closeOtherTabs) {
+      const keep = tabs[0].id;
+      const others = (await chrome.tabs.query({ url: `${origin}/*` })).filter(t => t.id !== keep);
+      for (const t of others) {
+        try { await chrome.tabs.remove(t.id); } catch (e) { /* already gone */ }
+      }
+    }
+
+    const tabId = tabs[0].id;
+    // Small settle delay so a closing tab's beforeunload handlers finish.
+    await new Promise(r => setTimeout(r, 300));
+
+    const results = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: async (o, ls, ss, idb, cch) => {
+        const out = { localStorage: null, sessionStorage: null, indexedDB: [], caches: [] };
+        try {
+          if (ls && location.origin === o) {
+            const n = localStorage.length;
+            localStorage.clear();
+            out.localStorage = { cleared: n };
+          }
+        } catch (e) { out.localStorage = { error: String(e) }; }
+        try {
+          if (ss && location.origin === o) {
+            const n = sessionStorage.length;
+            sessionStorage.clear();
+            out.sessionStorage = { cleared: n };
+          }
+        } catch (e) { out.sessionStorage = { error: String(e) }; }
+        if (idb && location.origin === o && indexedDB.databases) {
+          const dbs = await indexedDB.databases();
+          for (const db of dbs) {
+            try {
+              await new Promise((res, rej) => {
+                const rq = indexedDB.deleteDatabase(db.name);
+                rq.onsuccess = rq.onerror = () => res();
+                rq.onblocked = () => rej(new Error('blocked'));
+                setTimeout(res, 3000);
+              });
+              out.indexedDB.push({ name: db.name, ok: true });
+            } catch (e) {
+              out.indexedDB.push({ name: db.name, error: String(e) });
+            }
+          }
+        }
+        if (cch && location.origin === o && window.caches) {
+          try {
+            for (const k of await caches.keys()) {
+              const ok = await caches.delete(k);
+              out.caches.push({ name: k, ok });
+            }
+          } catch (e) { out.caches = [{ error: String(e) }]; }
+        }
+        return out;
+      },
+      args: [origin, clearLocalStorage, clearSessionStorage, clearIndexedDB, clearCaches],
+    });
+
+    const detail = results[0]?.result || {};
+    const durationMs = Date.now() - startTime;
+
+    // Close the tab we opened just for this.
+    if (openedTab) {
+      try { await chrome.tabs.remove(openedTab.id); } catch (e) { /* already gone */ }
+    }
+
+    capture('storage.clear', { origin, ...detail, ok: true, durationMs }, { id });
+    log('info', 'storage-clear-done', { id, origin, detail, durationMs });
+    sendResult(id, { ok: true, origin, ...detail, closedOtherTabs: closeOtherTabs, openedTab: !!openedTab });
+  } catch (err) {
+    log('error', 'storage-clear-failed', { id, url, error: err.message });
+    capture('storage.clear', { url, ok: false, error: err.message }, { id });
+    sendError(id, `storage.clear failed: ${err.message}`);
+  }
 }
 
 // ---------------------------------------------------------------------------

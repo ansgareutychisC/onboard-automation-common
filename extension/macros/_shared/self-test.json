@@ -17,6 +17,11 @@
       "url": "{{inputs.baseUrl}}"
     },
     {
+      "id": "clear-storage",
+      "cmd": "storage.clear",
+      "url": "{{inputs.baseUrl}}"
+    },
+    {
       "id": "open-signup",
       "cmd": "tabs.open",
       "url": "{{inputs.baseUrl}}/",

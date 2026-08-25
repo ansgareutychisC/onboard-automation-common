@@ -1,31 +1,34 @@
-v0.9.3: PURE REST signup (zero clicks) + refcounted debugger sessions
+v0.9.4: storage.clear command — the missing half of logout (live-verified)
 
-THE BREAKTHROUGH (verified live through the user's browser):
-- Full Notion auth flow replayed as REST calls only — no form.fill, no
-  clicks, no captcha encounter: getLoginOptions → sendTemporaryPassword →
-  code read from the v3-mail worker → loginWithEmail → session cookies
-  captured (token_v2 + userId). Recipe + gotchas: docs/NOTION-REST-AUTH.md.
-- Key discoveries: Notion-Client-Version header is MANDATORY (400 "Login
-  is not allowed" without it); the code email's text_body IS the code;
-  chained mail is stored under the APEX address form (admin@priv.email);
-  background-tab fetches get throttled (macro focuses the mail tab).
-- notion/signup-rest.json: the flow as a 17-step macro (reads the live
-  Notion-Client-Version from the signup page — survives Notion deploys).
-  Dry-run harness mocks all endpoints incl. request-shape assertions
-  (loginOptionsToken/deviceId must flow through; state/password must
-  match) — 9/9 macros, 122/122 steps PASS, lint clean.
+User-reported symptom: after login, Notion redirects to the last-used page
+of the PREVIOUS account. Root cause (measured live in the user's browser):
+cookies.remove cleared 16/16 cookies fine, but 122 localStorage keys
+survived — including lastVisitedRoute, current-user-id (old account),
+sidebar state, BlockFrecency keyed by old user ids. Plus sessionStorage
+(5), IndexedDB (3 DBs — Notion's TransactionStore can hold queued offline
+transactions from a previous session), and 2 service-worker caches.
 
-FIX: reference-counted debugger sessions (debuggerHolders):
-- xhr.intercept and form.eval each attach/detach chrome.debugger; the
-  first detach killed every other feature's session (latent v0.8.4 bug —
-  a daemon-driven interceptor died the moment a subsequent form.eval ran,
-  which is why the intercept attempts silently captured nothing).
-  Attach/detach is now per-tab refcounted ('macro' holder for runs,
-  'xhr:<id>' per interceptor, 'adhoc' for one-shot evals).
-  NOTE: requires an extension reload to take effect.
+- NEW storage.clear command: wipes localStorage + sessionStorage +
+  IndexedDB + Cache API for an origin. Closes other same-origin tabs first
+  (releases IDB handles, stops in-memory state being written back), opens
+  a temp tab on the origin when none exists. All storage surfaces
+  individually toggleable.
+- cookies.remove hardened: sweeps the whole registrable domain (not just
+  the url's subdomain — host-only cookies on www.notion.com were missed)
+  and removes per (name, domain, path) so same-name duplicates across
+  domain variants each die.
+- All four signup macros (signup, signup-rest, full-onboarding, self-test)
+  now run cookies.remove → storage.clear before opening the page.
+- todoist reference finding: its flow needs no clearing because it uses a
+  fresh requests.Session() per signup — clean by construction. The
+  extension inherits the user's browser state, so clearing must be
+  explicit. Lesson recorded in SKILL.md §1.17.
+- Updated SKILL-consumer.md to the user's improved revision + live
+  findings addendum: chained mail is stored under the APEX address form
+  (admin@priv.email), not the v3-mail form the doc claims — query both
+  until the coming query-API unifies them.
+- Dry-run harness: storage.clear mocked; 9/9 macros, 128/128 steps PASS.
 
-Email reading status: v3-mail worker (full bodies) is the primary path;
-named priv.email aliases dual-deliver into it. The REST macro reads it
-via the admin-cookie session in a focused tab today; a Bearer
-QUERY_API_TOKEN config would remove the tab dependency (token lives in
-the mail-kit deploy secrets).
+Live verification performed in the user's browser: closed other notion
+tabs, ran the clear — localStorage 122→0, lastVisitedRoute gone, all 3
+IndexedDB deleted, both caches deleted.

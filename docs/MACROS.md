@@ -78,7 +78,8 @@ Templates are resolved before the step is executed. If a template path doesn't r
 | `fetch` | HTTP request via extension's browser context | `url`, `method`, `headers`, `body`, `credentials` |
 | `cookies.getAll` | Get all cookies for a URL | `url` |
 | `cookies.set` | Set cookies | `url`, `cookies` |
-| `cookies.remove` | Remove cookies (including httpOnly) | `url`, `names` (optional — omit for all) |
+| `cookies.remove` | Remove cookies (whole registrable domain sweep, per name+domain+path) | `url`, `names` (optional — omit for all) |
+| `storage.clear` | Wipe origin storage: localStorage + sessionStorage + IndexedDB + caches (closes other tabs on the origin to release IDB handles) | `url`, `clearLocalStorage`/`clearSessionStorage`/`clearIndexedDB`/`clearCaches`/`closeOtherTabs` (all default true) |
 | `eval` | Pure JS in the service worker (no page context) | `function`, `args` |
 | `xhr.intercept` | Intercept an XHR | `tabId`, `urlPattern`, `timeoutMs` |
 | `screenshot` | Capture visible tab | `tabId` |

@@ -18,6 +18,11 @@
       "url": "https://app.notion.com"
     },
     {
+      "id": "clear-storage",
+      "cmd": "storage.clear",
+      "url": "https://app.notion.com"
+    },
+    {
       "id": "open-signup",
       "cmd": "tabs.open",
       "url": "https://app.notion.com/signup",
