@@ -1,0 +1,455 @@
+/**
+ * Dashboard HTML for the Notion Onboarding Worker.
+ *
+ * This file is GENERATED from the static files in dashboard/:
+ *   - index.html   (the HTML structure)
+ *   - styles.css   (the CSS, inlined into <style>)
+ *   - app.js       (the JavaScript, inlined into <script>)
+ *
+ * Both the Worker (worker/src/index.ts) and the Python bridge
+ * (scripts/run_bridge_aiohttp.py) serve the same dashboard. The Worker
+ * imports this string directly; the Python bridge serves the three static
+ * files via HTTP.
+ *
+ * To rebuild this file after editing the static assets, run:
+ *   python3 scripts/build_dashboard_ts.py
+ *
+ * IMPORTANT: The HTML output here MUST stay byte-for-byte identical to
+ * inlining <style>{styles.css}</style> and <script>{app.js}</script>
+ * into index.html. The build script verifies this.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export const DASHBOARD_HTML = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notion Onboarding Worker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+:root{color-scheme:light dark;--bg:#fff;--fg:#191919;--muted:#6b6b6b;--accent:#2383E2;--accent-h:#0b6bcb;--accent-s:rgba(35,131,226,.08);--border:#e9e9e7;--card:#fff;--code:#f7f7f5;--hover:rgba(35,131,226,.05);--sel:rgba(35,131,226,.1);--th:#fbfbfa;--ok:#4f8a3b;--err:#e03e3e;--r:8px;--rs:5px;--kbd:rgba(0,0,0,.06)}
+@media(prefers-color-scheme:dark){:root{--bg:#191919;--fg:#e6e6e5;--muted:#9b9a97;--accent:#529cca;--accent-h:#6db0e0;--accent-s:rgba(82,156,202,.12);--border:#373737;--card:#202020;--code:#2a2a2a;--hover:rgba(82,156,202,.08);--sel:rgba(82,156,202,.18);--th:#232323;--ok:#8fbc8f;--err:#ff6b6b;--kbd:rgba(255,255,255,.08)}}
+*{box-sizing:border-box}body{font:14px/1.5 -apple-system,sans-serif;background:var(--bg);color:var(--fg);max-width:1280px;margin:0 auto;padding:1.5rem 1rem 3rem}
+h1{font-size:1.6rem;margin:0 0 .25rem}
+.header-row{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
+.ext-pill{display:inline-flex;align-items:center;gap:.4rem;padding:.25rem .65rem;background:var(--accent-s);border:1px solid var(--accent);border-radius:999px;font-size:12px;font-weight:600;color:var(--accent)}
+.ext-dot{width:8px;height:8px;border-radius:50%;background:var(--err);transition:background .2s}
+.ext-dot.ok{background:var(--ok);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(79,138,59,.4)}70%{box-shadow:0 0 0 6px rgba(79,138,59,0)}100%{box-shadow:0 0 0 0 rgba(79,138,59,0)}}
+.tabs{display:flex;gap:0;margin:1rem 0 0;border-bottom:2px solid var(--border)}
+.tab{padding:.55rem 1.1rem;cursor:pointer;border:0;background:transparent;color:var(--muted);font:inherit;font-weight:600;border-bottom:2px solid transparent;margin-bottom:-2px;border-radius:4px 4px 0 0;transition:background .12s,color .12s}
+.tab:hover{background:var(--accent-s);color:var(--accent)}
+.tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.tab .key{display:inline-block;padding:0 5px;font-size:11px;background:var(--kbd);border-radius:3px;margin-left:6px;font-family:monospace}
+.tab .count{display:inline-block;padding:0 6px;font-size:10px;background:var(--accent-s);color:var(--accent);border-radius:8px;margin-left:6px;font-weight:700}
+.view{display:none}.view.active{display:block}
+.card{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1.4rem;max-width:640px;margin:1.25rem auto 0}
+label{display:block;font-weight:500;font-size:12px;margin-bottom:.25rem;color:var(--muted)}
+input,select,textarea{width:100%;padding:.55rem .65rem;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--border);border-radius:var(--rs)}
+input:focus,select:focus,textarea:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 2px var(--accent-s)}
+.field-grid{display:grid;grid-template-columns:1fr 1fr;gap:.75rem}
+.field-grid .full{grid-column:1/-1}
+button{padding:.85rem 1.2rem;font:inherit;font-weight:700;font-size:15px;background:var(--accent);color:#fff;border:0;border-radius:var(--r);cursor:pointer;transition:background .12s}
+button:hover:not(:disabled){background:var(--accent-h)}
+button:disabled{opacity:.6;cursor:not-allowed}
+button.secondary{background:transparent;color:var(--accent);border:1px solid var(--accent);padding:.45rem .85rem;font-size:13px;border-radius:var(--rs)}
+button.tiny{background:transparent;color:var(--accent);border:1px solid var(--border);padding:.25rem .55rem;font-size:11px;border-radius:var(--rs);font-weight:500;margin:0 2px}
+button.tiny:hover{background:var(--accent-s);border-color:var(--accent)}
+.status{padding:.6rem .9rem;border-radius:var(--rs);margin:1rem auto;max-width:640px;font-size:13px}
+.status.info{background:rgba(35,131,226,.08)}.status.error{background:rgba(224,62,62,.1)}.status.success{background:rgba(79,138,59,.1)}
+.badge{display:inline-block;padding:1px 8px;border-radius:10px;font-size:11px;font-weight:600;background:rgba(128,128,128,.15)}
+.badge.ok{background:rgba(79,138,59,.15);color:var(--ok)}.badge.err{background:rgba(224,62,62,.15);color:var(--err)}.badge.info{background:var(--accent-s);color:var(--accent)}.badge.warn{background:rgba(255,193,7,.18);color:#856404}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:.55rem .7rem;border-bottom:1px solid var(--border)}
+th{background:var(--th);font-weight:600;cursor:pointer;position:sticky;top:0;white-space:nowrap}
+tr.row{cursor:pointer}tr.row:hover{background:var(--hover)}tr.row.selected{background:var(--sel);box-shadow:inset 3px 0 0 var(--accent)}
+td.email{font-family:monospace;font-size:12px;word-break:break-all}
+td.created{color:var(--muted);font-size:12px;white-space:nowrap}
+td.actions{white-space:nowrap}
+.search-bar{display:flex;gap:.5rem;margin:1rem 0;align-items:center;flex-wrap:wrap}
+.search-bar input{flex:1;min-width:200px}
+.filter-select{padding:.45rem .55rem;font-size:12px;border:1px solid var(--border);border-radius:var(--rs);background:var(--bg);color:var(--fg)}
+.spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .6s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.detail-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;z-index:140}.detail-overlay.open{display:block}
+.detail-panel{position:fixed;top:0;right:0;width:520px;max-width:92vw;height:100vh;background:var(--card);border-left:1px solid var(--border);box-shadow:0 12px 32px rgba(0,0,0,.12);transform:translateX(100%);transition:transform .22s;z-index:150;overflow-y:auto;display:none}
+.detail-panel.open{display:block;transform:translateX(0)}
+.detail-head{position:sticky;top:0;background:var(--card);border-bottom:1px solid var(--border);padding:.9rem 1.1rem;display:flex;align-items:flex-start;gap:.6rem}
+.detail-body{padding:1rem 1.1rem 1.5rem}
+.kv{display:grid;grid-template-columns:minmax(0,120px) 1fr;gap:.4rem .85rem;font-size:13px}.kv .k{color:var(--muted);font-weight:500}.kv .v{word-break:break-all}
+.kv .v.mono{font-family:monospace;font-size:12px}
+.api-key-box{background:var(--code);border:1px solid var(--border);border-radius:var(--rs);padding:.55rem .65rem;display:flex;align-items:center;gap:.5rem}
+.api-key-box .key-text{flex:1;font-family:monospace;font-size:11px;word-break:break-all}
+.toast{position:fixed;bottom:1.5rem;left:50%;transform:translateX(-50%) translateY(10px);background:#2a2a2a;color:#fff;padding:.6rem 1.1rem;border-radius:var(--rs);font-size:13px;opacity:0;transition:opacity .2s,transform .2s;z-index:200;pointer-events:none}
+.toast.show{opacity:.96;transform:translateX(-50%) translateY(0)}.toast.success{background:#1e7e34}.toast.error{background:#b02a37}
+.hint{color:var(--muted);font-size:12px;margin:1rem 0;line-height:1.6}
+.hint kbd{display:inline-block;padding:1px 5px;font-family:monospace;background:var(--kbd);border:1px solid var(--border);border-radius:3px;font-size:11px}
+.job-progress{max-width:640px;margin:.5rem auto 0;background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:.9rem 1.1rem}
+.job-step{display:grid;grid-template-columns:18px 1fr auto;align-items:center;gap:.5rem;font-size:13px;padding:2px 0}
+.job-step.done{color:var(--ok)}.job-step.running{color:var(--accent)}.job-step.pending{color:var(--muted)}
+.progress-bar{height:4px;background:var(--code);border-radius:2px;overflow:hidden;margin-bottom:.6rem}
+.progress-bar>span{display:block;height:100%;background:var(--accent);transition:width .4s}
+.empty{padding:2rem;text-align:center;color:var(--muted)}
+.action-form{background:var(--code);border:1px solid var(--border);border-radius:var(--rs);padding:.75rem;margin-top:.6rem}
+.action-form label{font-size:11px;text-transform:uppercase;font-weight:600}
+.action-form .row{display:flex;gap:.5rem;align-items:end;margin-bottom:.4rem}
+.action-form .row>div{flex:1}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.4);display:none;z-index:160}.modal-overlay.open{display:flex;align-items:flex-start;justify-content:center;padding:3rem 1rem}
+.modal{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:1.25rem 1.4rem;max-width:600px;width:100%;max-height:80vh;overflow-y:auto}
+@media(max-width:640px){.field-grid{grid-template-columns:1fr}.detail-panel{width:100vw}}
+.sub-tabs{display:flex;gap:.4rem;margin:1rem 0 .5rem;align-items:center}
+.sub-tab{padding:.35rem .85rem;cursor:pointer;border:1px solid var(--border);background:transparent;color:var(--muted);font:inherit;font-size:13px;font-weight:600;border-radius:var(--rs);transition:background .12s,color .12s,border-color .12s}
+.sub-tab:hover{background:var(--hover);color:var(--accent)}
+.sub-tab.active{color:var(--accent);border-color:var(--accent);background:var(--accent-s)}
+.sub-view{display:none}.sub-view.active{display:block}
+.mode-toggle{display:inline-flex;gap:0;margin-bottom:1rem;border:1px solid var(--border);border-radius:var(--rs);overflow:hidden}
+.mode-btn{padding:.3rem .8rem;cursor:pointer;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:600;transition:background .12s,color .12s}
+.mode-btn:hover{background:var(--hover);color:var(--accent)}
+.mode-btn.active{background:var(--accent);color:#fff}
+</style>
+</head>
+<body>
+<div class="header-row"><h1>Notion Onboarding Worker</h1><span class="ext-pill"><span class="ext-dot" id="ext-dot"></span><span id="ext-label">checking…</span></span></div>
+<div class="tabs">
+<button class="tab active" data-view="workspaces">Workspaces <span class="count" id="ws-count">0</span></button>
+<button class="tab" data-view="accounts">Accounts <span class="count" id="acct-count">0</span></button>
+<button class="tab" data-view="create">Create</button>
+</div>
+
+<div id="workspaces-view" class="view active">
+<div class="search-bar">
+<input id="ws-search" placeholder="Search workspaces by name, space_id, or account email… (/ to focus)">
+<select class="filter-select" id="ws-filter-plan"><option value="">All plans</option><option value="personal">Personal</option><option value="business">Business</option></select>
+<select class="filter-select" id="ws-filter-trial"><option value="">All</option><option value="active">Trial active</option><option value="expired">Trial expired</option><option value="none">No trial</option></select>
+<button class="secondary" id="ws-refresh">↻ Refresh</button>
+<button class="secondary" id="ws-batch-create">+ Batch create</button>
+<span id="ws-count-label" style="color:var(--muted);font-size:12px"></span>
+</div>
+<div style="border:1px solid var(--border);border-radius:var(--r);overflow:auto;max-height:65vh"><table><thead><tr><th>Workspace</th><th>Account</th><th>Plan</th><th>Trial</th><th>Threads</th><th>API Key</th><th>Actions</th><th>Created</th></tr></thead><tbody id="ws-tbody"><tr><td colspan="8" class="empty">Load workspaces…</td></tr></tbody></table></div>
+<p class="hint"><kbd>↑</kbd>/<kbd>↓</kbd> navigate · <kbd>Enter</kbd> details · <kbd>Esc</kbd> close · <kbd>/</kbd> search · <kbd>r</kbd> refresh</p>
+</div>
+
+<div id="accounts-view" class="view">
+<div class="search-bar">
+<input id="acct-search" placeholder="Search accounts by email or user_id…">
+<button class="secondary" id="acct-refresh">↻ Refresh</button>
+<button class="secondary" id="acct-batch-create">+ Batch create accounts</button>
+<span id="acct-count-label" style="color:var(--muted);font-size:12px"></span>
+</div>
+<div style="border:1px solid var(--border);border-radius:var(--r);overflow:auto;max-height:65vh"><table><thead><tr><th>Email</th><th>User ID</th><th>Status</th><th>Workspaces</th><th>Actions</th><th>Created</th></tr></thead><tbody id="acct-tbody"><tr><td colspan="6" class="empty">Load accounts…</td></tr></tbody></table></div>
+<p class="hint">Click a row for account details + session info. Click <strong>+ Batch create accounts</strong> for bulk signup.</p>
+</div>
+
+<div id="create-view" class="view">
+<div class="sub-tabs">
+<button class="sub-tab active" data-subview="account">Account</button>
+<button class="sub-tab" data-subview="workspace">Workspace</button>
+<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center"><kbd>[</kbd>/<kbd>]</kbd> switch sub-tab</span>
+</div>
+
+<div id="sub-account" class="sub-view active">
+<div class="card" style="max-width:680px">
+<div class="mode-toggle" id="acct-mode-toggle">
+<button type="button" class="mode-btn active" data-mode="single">Single</button>
+<button type="button" class="mode-btn" data-mode="batch">Batch</button>
+</div>
+
+<div id="acct-single">
+<p class="hint" style="margin-top:0">Signs up a new Notion account + creates the first workspace + finishes onboarding screens. The browser tab opens automatically — hCaptcha auto-solves in invisible mode. No manual token paste needed.</p>
+<form id="form-account">
+<div class="field-grid">
+<div><label>Email (blank=auto)</label><input id="email" placeholder="user@privatimail.com" autofocus></div>
+<div><label>Workspace name</label><input id="wsName" value="My Workspace"></div>
+<div><label>Workspace icon</label><input id="wsIcon" value="🏠" maxlength="4"></div>
+</div>
+<p class="hint" style="margin:.4rem 0">A browser tab will open at <code>app.notion.com/signup</code>, the email will be filled automatically, and hCaptcha will auto-solve. If hCaptcha shows a challenge, solve it in the browser tab. The 6-digit code is fetched from the email worker automatically.</p>
+<button type="submit" id="submit-account">Create account</button>
+</form>
+</div>
+
+<div id="acct-batch" style="display:none">
+<p class="hint" style="margin-top:0">Creates multiple accounts in sequence. Each account gets its own workspace + onboarding. One per line: <code>email | workspaceName | workspaceIcon</code> (all optional, auto-generated if blank).</p>
+<form id="form-account-batch">
+<div class="field-grid">
+<div class="full"><label>Accounts (one per line)</label><textarea id="acct-batch-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="user1@privatimail.com | Team 1 | 🏠&#10;user2@privatimail.com | Team 2 | 🎯&#10;auto@privatimail.com | Team 3 | 💼"></textarea></div>
+</div>
+<p class="hint" style="margin:.4rem 0">Each account opens a browser tab sequentially. Solve hCaptcha if prompted. The whole batch takes ~60-300s depending on captcha + email delivery.</p>
+<button type="submit" id="submit-account-batch">Create accounts</button>
+</form>
+</div>
+</div>
+</div>
+
+<div id="sub-workspace" class="sub-view">
+<div class="card" style="max-width:680px">
+<div class="mode-toggle" id="ws-mode-toggle">
+<button type="button" class="mode-btn active" data-mode="single">Single</button>
+<button type="button" class="mode-btn" data-mode="batch">Batch</button>
+</div>
+
+<div id="ws-single">
+<p class="hint" style="margin-top:0">Adds a new workspace to an account that already exists. No signup, no chat — just the workspace.</p>
+<form id="form-workspace">
+<div class="field-grid">
+<div><label>Account</label><select id="ws-acct"><option value="">Loading accounts…</option></select></div>
+<div><label>Workspace name</label><input id="ws-name-new" placeholder="Team Alpha"></div>
+<div><label>Workspace icon</label><input id="ws-icon-new" value="🏠" maxlength="4"></div>
+<div><label>Plan type</label><select id="ws-plan-new"><option value="personal">Personal</option><option value="business">Business (requires separate trial activation)</option></select></div>
+</div>
+<button type="submit" id="submit-workspace">Create workspace</button>
+</form>
+</div>
+
+<div id="ws-batch" style="display:none">
+<p class="hint" style="margin-top:0">Creates multiple workspaces on an existing account. One per line: <code>name | icon | planType</code> (icon + planType optional, default 🏠 personal).</p>
+<form id="form-workspace-batch">
+<div class="field-grid">
+<div class="full"><label>Account</label><select id="ws-batch-acct"><option value="">Loading accounts…</option></select></div>
+<div class="full"><label>Workspaces (one per line)</label><textarea id="ws-batch-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="Team Alpha | 🚀 | personal&#10;Team Beta | 🎯 | personal&#10;Team Gamma | 💼 | business"></textarea></div>
+</div>
+<button type="submit" id="submit-workspace-batch">Create all workspaces</button>
+</form>
+</div>
+</div>
+</div>
+
+<div id="status" style="display:none"></div>
+<div id="job-wrap" style="display:none"></div>
+</div>
+
+<div class="detail-overlay" id="overlay"></div>
+<div class="detail-panel" id="panel"><div class="detail-head"><div style="flex:1"><div id="d-title" style="font-family:monospace;font-size:13px">—</div><div id="d-sub" style="color:var(--muted);font-size:11px">—</div></div><button class="secondary" id="d-close">×</button></div><div class="detail-body" id="d-body"></div></div>
+
+<div class="modal-overlay" id="modal-overlay">
+<div class="modal" id="modal-content"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script>
+const $=id=>document.getElementById(id);const extDot=$("ext-dot"),extLabel=$("ext-label");const tabs=[...document.querySelectorAll(".tab")];const views={workspaces:$("workspaces-view"),accounts:$("accounts-view"),create:$("create-view")};
+let curView="workspaces",accounts=[],workspaces=[],jobs=[],wsFiltered=[],wsSelIdx=-1,acctFiltered=[],acctSelIdx=-1,loaded=false,jobId=null,pollTimer=null,extTimer=null;
+
+function toast(m,k){const t=$("toast");t.textContent=m;t.className="toast show"+(k?" "+k:"");setTimeout(()=>t.className="toast",2400)}
+function setStatus(c,m){const s=$("status");if(!m){s.style.display="none";return}s.style.display="block";s.className="status "+c;s.textContent=m}
+function esc(s){return String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]))}
+function badge(s){const c=s?.toLowerCase();let cls="warn";if(c==="complete"||c==="completed"||c==="backported"||c==="active")cls="ok";else if(c==="signed_up"||c==="onboarded"||c==="trialing")cls="info";else if(c==="failed"||c==="deleted")cls="err";return'<span class="badge '+cls+'">'+esc(s||"—")+'</span>'}
+function maskKey(k){if(!k)return"—";return k.length<=12?"••••":k.slice(0,8)+"••••"+k.slice(-4)}
+function fmtTime(t){if(!t)return"—";const d=new Date(t<1e12?t*1000:t);if(isNaN(d))return"—";const diff=Date.now()-d.getTime();if(diff<60000)return Math.floor(diff/1000)+"s ago";if(diff<3600000)return Math.floor(diff/60000)+"m ago";if(diff<86400000)return Math.floor(diff/3600000)+"h ago";return Math.floor(diff/86400000)+"d ago"}
+function switchView(n){if(!views[n])return;curView=n;tabs.forEach(t=>{t.classList.toggle("active",t.dataset.view===n)});Object.keys(views).forEach(k=>views[k].classList.toggle("active",k===n));if((n==="workspaces"||n==="accounts"||n==="create")&&!loaded)refreshAll();if(n==="create"){setTimeout(()=>{const el=$("email");if(el)el.focus()},50)}}
+tabs.forEach(t=>t.addEventListener("click",()=>switchView(t.dataset.view)));
+
+// ── Sub-tab switcher (Create tab: Account vs Workspace) ──
+const subTabs=[...document.querySelectorAll(".sub-tab")];
+function switchSubView(n){subTabs.forEach(t=>{t.classList.toggle("active",t.dataset.subview===n)});["account","workspace"].forEach(k=>{const el=$("sub-"+k);if(el)el.classList.toggle("active",k===n)});if(n==="account"){setTimeout(()=>{const el=$("email");if(el)el.focus()},50)}else if(n==="workspace"){setTimeout(()=>{const el=$("ws-name-new");if(el)el.focus()},50)}}
+subTabs.forEach(t=>t.addEventListener("click",()=>switchSubView(t.dataset.subview)));
+
+async function checkExt(){try{const r=await fetch("/api/extensions");const d=await r.json();const e=d.extensions||[];if(e.length){extDot.classList.add("ok");const httpExts=e.filter(x=>x.status==="connected-http");if(httpExts.length===e.length){extLabel.textContent=e.length+" ext (HTTP)"}else{extLabel.textContent=e.length+" ext connected"}}else{extDot.classList.remove("ok");extLabel.textContent="no extension"}}catch{extDot.classList.remove("ok");extLabel.textContent="unknown"}}
+function startExtPoll(){checkExt();extTimer=setInterval(checkExt,10000)}
+
+// ── Populate Create-tab dropdowns from D1 data ──
+function populateCreateDropdowns(){const wsAcct=$("ws-acct");const wsBatchAcct=$("ws-batch-acct");if(!accounts.length){if(wsAcct)wsAcct.innerHTML='<option value="">(no accounts yet — create one above first)</option>';if(wsBatchAcct)wsBatchAcct.innerHTML='<option value="">(no accounts yet)</option>';return}
+const opts=accounts.map(a=>'<option value="'+esc(a.id)+'">'+esc(a.email)+(a.user_id?' ('+esc(a.user_id.slice(0,8))+'…)':'')+'</option>').join("");
+if(wsAcct)wsAcct.innerHTML=opts;
+if(wsBatchAcct)wsBatchAcct.innerHTML=opts}
+
+// ── Mode toggles (Single | Batch) within each sub-tab ──
+function setupModeToggle(toggleId, singleId, batchId){
+  const toggle=$(toggleId);if(!toggle)return;
+  toggle.querySelectorAll(".mode-btn").forEach(btn=>{
+    btn.addEventListener("click",()=>{
+      toggle.querySelectorAll(".mode-btn").forEach(b=>b.classList.remove("active"));
+      btn.classList.add("active");
+      const mode=btn.dataset.mode;
+      $(singleId).style.display=mode==="single"?"block":"none";
+      $(batchId).style.display=mode==="batch"?"block":"none";
+    });
+  });
+}
+setupModeToggle("acct-mode-toggle","acct-single","acct-batch");
+setupModeToggle("ws-mode-toggle","ws-single","ws-batch");
+
+// ── Batch account creation form ──
+$("form-account-batch").addEventListener("submit",async e=>{e.preventDefault();if(!extDot.classList.contains("ok")){setStatus("error","✗ No extension connected");toast("Extension not connected","error");return}
+const list=$("acct-batch-list").value.split("\\\\n").map(s=>s.trim()).filter(Boolean);if(!list.length){toast("At least one account required","error");return}
+const accounts=list.map(line=>{const parts=line.split("|").map(s=>s.trim());return{email:parts[0]||undefined,workspaceName:parts[1]||"My Workspace",workspaceIcon:parts[2]||"🏠"}});
+$("submit-account-batch").disabled=true;$("submit-account-batch").textContent="Starting…";setStatus("info","Starting batch signup for "+accounts.length+" accounts (sequential, ~30-120s each)…");
+try{const r=await fetch("/api/accounts/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({accounts})});const d=await r.json();if(d.results){
+// Show immediate response with jobIds + start polling for completion
+const jobIds=d.results.map(r=>r.jobId);
+$("job-wrap").style.display="block";
+const renderBatchStatus=(jobs)=>{let html='<div class="job-progress"><div style="font-weight:600;margin-bottom:.4rem">Batch '+d.batchId.slice(0,8)+'… — '+jobs.filter(j=>j.status==="completed").length+'/'+d.total+' done</div>';d.results.forEach(r=>{const j=jobs.find(x=>x.id===r.jobId);const st=j?j.status:"pending";const icon=st==="completed"?"✓":st==="failed"?"✗":st==="running"?"⏳":"◯";const color=st==="completed"?"var(--ok)":st==="failed"?"var(--err)":st==="running"?"var(--accent)":"var(--muted)";html+='<div class="job-step" style="color:'+color+'"><span>'+icon+'</span><span>'+esc(r.email||"?")+'</span><span>'+st+(j&&j.error?": "+esc(j.error.slice(0,60)):"")+'</span></div>'});html+='</div>';$("job-wrap").innerHTML=html};
+renderBatchStatus([]);
+// Poll jobs every 5s until all complete
+const batchPoll=async()=>{const allDone=await fetch("/api/jobs").then(r=>r.json()).catch(()=>({jobs:[]}));const jobs=(allDone.jobs||[]).filter(j=>jobIds.includes(j.id));renderBatchStatus(jobs);const pending=jobs.filter(j=>j.status==="pending"||j.status==="running");if(pending.length){setTimeout(batchPoll,5000)}else{$("submit-account-batch").disabled=false;$("submit-account-batch").textContent="Create accounts";const succeeded=jobs.filter(j=>j.status==="completed").length;setStatus(succeeded===d.total?"success":"info","✓ Batch complete: "+succeeded+"/"+d.total+" succeeded");toast(succeeded+" created","success");refreshAll()}};
+setTimeout(batchPoll,3000);
+}else{setStatus("error","✗ "+(d.error||"Failed"));toast(d.error||"Failed","error");$("submit-account-batch").disabled=false;$("submit-account-batch").textContent="Create accounts"}}catch(e){setStatus("error","Network: "+e.message);$("submit-account-batch").disabled=false;$("submit-account-batch").textContent="Create accounts"}});
+
+// ── Batch workspace creation form ──
+$("form-workspace-batch").addEventListener("submit",async e=>{e.preventDefault();if(!extDot.classList.contains("ok")){setStatus("error","✗ No extension connected");toast("Extension not connected","error");return}
+const acctId=$("ws-batch-acct").value;if(!acctId){toast("Select an account","error");return}
+const list=$("ws-batch-list").value.split("\\\\n").map(s=>s.trim()).filter(Boolean);if(!list.length){toast("At least one workspace required","error");return}
+const workspaces=list.map(line=>{const parts=line.split("|").map(s=>s.trim());return{name:parts[0],icon:parts[1]||"🏠",planType:parts[2]||"personal"}});
+$("submit-workspace-batch").disabled=true;$("submit-workspace-batch").textContent="Creating…";setStatus("info","Creating "+workspaces.length+" workspaces…");
+try{const r=await fetch("/api/accounts/"+acctId+"/workspaces/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaces})});const d=await r.json();if(d.results){let html='<div style="color:'+(d.failed?'var(--warn)':'var(--ok)')+';font-weight:600;margin-bottom:.4rem">'+d.succeeded+'/'+d.total+' succeeded</div>';d.results.forEach(r=>{html+='<div style="padding:.3rem 0;border-bottom:1px solid var(--border);font-size:12px">'+(r.ok?'✓':'✗')+' '+esc(r.name||"?")+(r.ok?' → <code>'+esc(r.spaceId.slice(0,12))+'…</code>':' <span style="color:var(--err)">'+esc(r.error)+'</span>')+'</div>'});$("job-wrap").style.display="block";$("job-wrap").innerHTML='<div class="job-progress">'+html+'</div>';toast(d.succeeded+" created","success");refreshAll()}else{setStatus("error","✗ "+(d.error||"Failed"));toast(d.error||"Failed","error")}}catch(e){setStatus("error","Network: "+e.message)}finally{$("submit-workspace-batch").disabled=false;$("submit-workspace-batch").textContent="Create all workspaces"}});
+
+// ── Create Account form ──
+$("form-account").addEventListener("submit",async e=>{e.preventDefault();if(!extDot.classList.contains("ok")){setStatus("error","✗ No extension connected");toast("Extension not connected","error");return}
+const body={email:$("email").value||undefined,workspaceName:$("wsName").value,workspaceIcon:$("wsIcon").value};
+$("submit-account").disabled=true;$("submit-account").textContent="Opening browser…";setStatus("info","Starting browser-orchestrated signup…");
+try{const r=await fetch("/api/signup-ext",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(body)});const d=await r.json();
+if(r.status===409&&d.conflict){showModal('<h3>⚠ Existing Notion session detected</h3><p class="hint">The browser has valid Notion session cookies (likely from a prior login). These will interfere with the signup flow — the login page will auto-redirect to the app instead of showing the signup form.</p><div style="background:var(--code);border:1px solid var(--border);border-radius:5px;padding:.5rem .75rem;margin:.5rem 0;font-size:12px">'+d.cookies.map(c=>'<div><code>'+esc(c.name)+'</code>: '+esc(c.value)+'</div>').join('')+'</div><p class="hint">Clear the session cookies and proceed with signup?</p><div style="display:flex;gap:.5rem;margin-top:.8rem"><button id="m-clear" class="secondary">Clear & Continue</button><button id="m-cancel" class="secondary">Cancel</button></div>',()=>{
+$("m-clear").onclick=async()=>{$("modal-overlay").classList.remove("open");$("submit-account").textContent="Clearing cookies…";setStatus("info","Clearing Notion session cookies…");
+try{await fetch("/api/clear-notion-cookies",{method:"POST"});toast("Cookies cleared","success");setStatus("info","Retrying signup…");
+const r2=await fetch("/api/signup-ext",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...body,force:true})});const d2=await r2.json();
+if(r2.status===202){jobId=d2.jobId;setStatus("info","⚡ Job "+d2.jobId.slice(0,8)+" — browser tab opening. Solve hCaptcha if prompted.");startPoll()}else{setStatus("error","Failed: "+JSON.stringify(d2));toast(d2.error||"Failed","error")}}catch(e2){setStatus("error","Network: "+e2.message)}finally{$("submit-account").disabled=false;$("submit-account").textContent="Create account"}};
+$("m-cancel").onclick=()=>{$("modal-overlay").classList.remove("open");$("submit-account").disabled=false;$("submit-account").textContent="Create account"};
+});
+$("submit-account").disabled=false;$("submit-account").textContent="Create account";return;
+}
+if(r.status===202){jobId=d.jobId;setStatus("info","⚡ Job "+d.jobId.slice(0,8)+" — browser tab opening. Solve hCaptcha if prompted.");startPoll()}else{setStatus("error","Failed: "+JSON.stringify(d));toast(d.error||"Failed","error")}}catch(e){setStatus("error","Network: "+e.message)}finally{$("submit-account").disabled=false;$("submit-account").textContent="Create account"}});
+
+// ── Create Workspace form (on existing account) ──
+$("form-workspace").addEventListener("submit",async e=>{e.preventDefault();if(!extDot.classList.contains("ok")){setStatus("error","✗ No extension connected");toast("Extension not connected","error");return}
+const acctId=$("ws-acct").value;if(!acctId){toast("Select an account","error");return}
+const name=$("ws-name-new").value.trim();if(!name){toast("Workspace name required","error");return}
+$("submit-workspace").disabled=true;$("submit-workspace").textContent="Creating…";setStatus("info","Creating workspace…");
+try{const r=await fetch("/api/accounts/"+acctId+"/workspaces",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,icon:$("ws-icon-new").value,planType:$("ws-plan-new").value})});const d=await r.json();if(d.ok){setStatus("success","✓ Created workspace "+(d.spaceId||"").slice(0,12)+"…");toast("Workspace created","success");refreshAll()}else{setStatus("error","✗ "+(d.error||"Failed"));toast(d.error||"Failed","error")}}catch(e){setStatus("error","Network: "+e.message)}finally{$("submit-workspace").disabled=false;$("submit-workspace").textContent="Create workspace"}});
+
+function startPoll(){if(pollTimer)clearInterval(pollTimer);pollJob();pollTimer=setInterval(pollJob,5000)}
+function stopPoll(){if(pollTimer)clearInterval(pollTimer);pollTimer=null}
+async function pollJob(){if(!jobId){stopPoll();return}try{const r=await fetch("/api/jobs");const d=await r.json();const j=d.jobs?.find(x=>x.id===jobId);if(!j)return;renderJob(j);if(j.status==="completed"||j.status==="failed"){stopPoll();if(j.status==="completed"){setStatus("success","✓ Account created!");toast("Complete!","success");if(loaded)refreshAll();populateCreateDropdowns()}else{setStatus("error","✗ Failed: "+j.error);toast("Failed","error")}jobId=null}}catch{}}
+function renderJob(j){const w=$("job-wrap");w.style.display="block";let result=null;try{result=JSON.parse(j.result||"{}")}catch{}const steps=result.steps||[];let pct=j.status==="completed"?100:j.status==="running"?50:0;let html='<div class="job-progress"><div style="display:flex;gap:.5rem;margin-bottom:.6rem"><span>'+(j.status==="completed"?"✓":j.status==="failed"?"✗":"⏳")+'</span><span style="font-weight:600">'+j.status+'</span></div><div class="progress-bar"><span style="width:'+pct+'%"></span></div>';steps.forEach(s=>{const cls=s.status==="done"?"done":s.status==="running"?"running":"pending";const icon=s.status==="done"?"✓":s.status==="running"?"⏳":"◯";html+='<div class="job-step '+cls+'"><span>'+icon+'</span><span>'+esc(s.step)+'</span><span>'+(s.chat?esc(s.chat.model||""):"")+'</span></div>'});if(j.error)html+='<div style="color:var(--err);margin-top:.5rem">'+esc(j.error)+'</div>';html+='</div>';w.innerHTML=html}
+
+// ── Data refresh ──
+async function refreshAll(){loaded=true;$("ws-tbody").innerHTML='<tr><td colspan="8" class="empty"><span class="spinner"></span> Loading…</td></tr>';$("acct-tbody").innerHTML='<tr><td colspan="6" class="empty"><span class="spinner"></span> Loading…</td></tr>';
+try{const[a,w,j]=await Promise.all([fetch("/api/accounts").then(r=>r.json()).catch(()=>({accounts:[]})),fetch("/api/workspaces").then(r=>r.json()).catch(()=>({workspaces:[]})),fetch("/api/jobs").then(r=>r.json()).catch(()=>({jobs:[]}))]);accounts=a.accounts||[];workspaces=w.workspaces||[];jobs=j.jobs||[];$("ws-count").textContent=workspaces.length;$("acct-count").textContent=accounts.length;applyWsFilter();applyAcctFilter();populateCreateDropdowns()}catch(e){$("ws-tbody").innerHTML='<tr><td colspan="8" class="empty">Error: '+esc(e.message)+'</td></tr>'}}
+
+// ── Workspaces tab ──
+function applyWsFilter(){const q=$("ws-search").value.toLowerCase();const plan=$("ws-filter-plan").value;const trial=$("ws-filter-trial").value;
+wsFiltered=workspaces.filter(w=>{const em=(w.account_email||"").toLowerCase();if(q&&!(w.name||"").toLowerCase().includes(q)&&!(w.space_id||"").toLowerCase().includes(q)&&!em.includes(q))return false;if(plan&&w.plan_type!==plan)return false;if(trial==="active"&&!w.trial_active)return false;if(trial==="expired"&&(!w.trial_ends_at||w.trial_ends_at>Date.now()))return false;if(trial==="none"&&(w.trial_active||w.trial_ends_at))return false;return true});
+if(wsSelIdx>=wsFiltered.length)wsSelIdx=-1;renderWorkspaces()}
+function renderWorkspaces(){$("ws-count-label").textContent=wsFiltered.length+" of "+workspaces.length+" workspaces";if(!wsFiltered.length){$("ws-tbody").innerHTML='<tr><td colspan="8" class="empty">'+(workspaces.length?"No matches":"No workspaces yet")+'</td></tr>';return}
+$("ws-tbody").innerHTML=wsFiltered.map((w,i)=>{const sel=i===wsSelIdx?" selected":"";const trialBadge=!w.trial_active&&(!w.trial_ends_at||w.trial_ends_at<Date.now())?(w.trial_ends_at?'<span class="badge warn">expired</span>':"—"):'<span class="badge ok">active</span>';return'<tr class="row'+sel+'" data-idx="'+i+'"><td>'+(w.icon||"🏠")+" "+esc(w.name||"(unnamed)")+'</td><td class="email">'+esc(w.account_email||"—")+'</td><td>'+badge(w.plan_type)+'</td><td>'+trialBadge+'</td><td style="text-align:center">'+(w.thread_count||0)+'</td><td style="font-family:monospace;font-size:11px;color:var(--muted)">'+(w.api_key?maskKey(w.api_key):"—")+'</td><td class="actions">'+wsActionButtons(w)+'</td><td class="created">'+fmtTime(w.created_at)+'</td></tr>'}).join("")}
+function wsActionButtons(w){return '<button class="tiny" data-action="chat" data-id="'+w.id+'">💬 Chat</button><button class="tiny" data-action="trial" data-id="'+w.id+'">⚡ Trial</button><button class="tiny" data-action="webhook" data-id="'+w.id+'">🔔 Webhook</button>'}
+$("ws-tbody").addEventListener("click",e=>{const btn=e.target.closest("button.tiny");if(btn){e.stopPropagation();const action=btn.dataset.action;const id=btn.dataset.id;handleWsAction(action,id);return}const tr=e.target.closest("tr.row");if(!tr)return;wsSelIdx=+tr.dataset.idx;renderWorkspaces();openWsDetail(wsFiltered[wsSelIdx])});
+$("ws-search").addEventListener("input",applyWsFilter);
+$("ws-filter-plan").addEventListener("change",applyWsFilter);
+$("ws-filter-trial").addEventListener("change",applyWsFilter);
+$("ws-refresh").addEventListener("click",()=>{refreshAll();toast("Refreshing…")});
+
+// ── Workspace actions ──
+function handleWsAction(action,id){const w=workspaces.find(x=>x.id===id);if(!w)return;
+if(action==="chat"){openChatModal(w)}
+else if(action==="trial"){openTrialModal(w)}
+else if(action==="webhook"){openWebhookModal(w)}}
+
+function openChatModal(w){showModal('<h3>💬 Send chat on '+esc(w.name||w.space_id)+'</h3><div class="action-form"><div class="row"><div><label>Prompt</label><textarea id="m-prompt" rows="3" style="width:100%">Hello! Summarize what this workspace is about.</textarea></div></div><div class="row"><div><label>Model</label><select id="m-model"><option value="default">Default</option><option value="angel-cake-high">Sonnet 5</option><option value="orange-mousse">GPT-5.6 Sol</option><option value="apricot-sorbet-high">Opus 4.7</option><option value="baseten-glm-5.2">GLM 5.2</option><option value="agave-flan">Agave Flan</option><option value="fireworks-kimi-k3">Kimi K3</option></select></div><div><label>Reasoning effort</label><select id="m-effort"><option value="low">Low</option><option value="medium" selected>Medium</option><option value="high">High</option></select></div></div><div class="row"><div><label>Page attachment ID (optional)</label><input id="m-attach" placeholder="UUID of a Notion page"></div></div><button id="m-submit">Send chat</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const prompt=$("m-prompt").value.trim();if(!prompt){toast("Prompt required","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+$("m-submit").disabled=true;$("m-submit").textContent="Sending… (15s for response)";$("m-result").innerHTML='<span class="spinner"></span> Initiating chat…';
+try{const r=await fetch("/api/workspaces/"+w.id+"/chats",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({prompt,model:$("m-model").value,reasoningEffort:$("m-effort").value,pageAttachmentId:$("m-attach").value||undefined})});const d=await r.json();if(d.ok){$("m-result").innerHTML='<div style="background:var(--code);border:1px solid var(--border);border-radius:5px;padding:.65rem .75rem;font-size:12px;margin-top:.5rem"><div style="color:var(--muted);font-size:11px;margin-bottom:.4rem">Model: '+esc(d.model)+(d.tokens?" · Tokens: "+JSON.stringify(d.tokens):"")+' · Thread: '+esc(d.threadId.slice(0,8))+'</div><div style="white-space:pre-wrap;word-break:break-word">'+esc(d.response)+'</div></div>';toast("Chat sent","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast(d.error||"Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Send chat"}}})}
+function openTrialModal(w){showModal('<h3>⚡ Activate 14-day business trial on '+esc(w.name||w.space_id)+'</h3><p class="hint">Requires an hCaptcha token. Open Notion → Settings → Billing → Start free trial in your browser, then copy the <code>P1_...</code> token from devtools (Network tab → updateSubscription request body). Token is valid ~2 minutes.</p><div class="action-form"><div class="row"><div><label>hCaptcha token (P1_...)</label><textarea id="m-token" rows="3" style="width:100%;font-family:monospace;font-size:11px" placeholder="P1_eyJ..."></textarea></div></div><div class="row"><div><label>Trial days</label><input id="m-days" type="number" value="14" min="1" max="30"></div></div><button id="m-submit">Activate trial</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const token=$("m-token").value.trim();if(!token){toast("hCaptcha token required","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+$("m-submit").disabled=true;$("m-submit").textContent="Activating…";$("m-result").innerHTML='<span class="spinner"></span>';
+try{const r=await fetch("/api/workspaces/"+w.id+"/activate-trial",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({captchaToken:token,trialDays:parseInt($("m-days").value)||14})});const d=await r.json();if(d.ok){$("m-result").innerHTML='<div style="color:var(--ok)">✓ Trial active until '+esc(d.trialEnd)+'</div>';toast("Trial activated","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Activate trial"}}})}
+function openWebhookModal(w){showModal('<h3>🔔 Create webhook on '+esc(w.name||w.space_id)+'</h3><p class="hint">Creates a developer integration + webhook subscription. Notion will ping <code>/api/webhooks/&lt;id&gt;</code> to verify ownership — the worker auto-verifies if the extension is connected.</p><div class="action-form"><div class="row"><div><label>Integration name</label><input id="m-name" value="webhook-'+Date.now()+'"></div></div><fieldset style="border:1px solid var(--border);border-radius:5px;padding:.5rem .75rem;margin:.4rem 0"><legend style="font-size:11px;color:var(--muted);font-weight:600">Event types (pick at least one)</legend><div style="display:grid;grid-template-columns:1fr 1fr;gap:.3rem;font-size:12px">'+['page.created','page.updated','page.content_updated','page.properties_updated','page.deleted','page.undeleted','page.moved','page.locked','page.unlocked','database.created','database.deleted','database.moved','database.undeleted','data_source.created','data_source.content_updated','data_source.schema_updated','data_source.moved','data_source.deleted','data_source.undeleted','view.created','view.updated','view.deleted','comment.created','comment.updated','comment.deleted','file_upload.created','file_upload.completed','file_upload.expired','file_upload.upload_failed'].map(e=>'<label style="display:flex;gap:.4rem;align-items:center;font-weight:400;cursor:pointer"><input type="checkbox" value="'+e+'" style="width:auto" '+(e==='page.created'||e==='page.updated'?'checked':'')+'> '+e+'</label>').join('')+'</div></fieldset><button id="m-submit">Create webhook</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const events=[...document.querySelectorAll('input[type=checkbox]:checked')].map(c=>c.value);if(!events.length){toast("Select at least one event","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+$("m-submit").disabled=true;$("m-submit").textContent="Creating…";$("m-result").innerHTML='<span class="spinner"></span>';
+try{const r=await fetch("/api/workspaces/"+w.id+"/webhooks",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({eventTypes:events,integrationName:$("m-name").value})});const d=await r.json();if(d.ok){$("m-result").innerHTML='<div style="color:var(--ok)">✓ Webhook created<br>Subscription ID: <code>'+esc(d.subscriptionId)+'</code><br>Status: '+esc(d.status)+'<br>Callback URL: <code>'+esc(d.callbackUrl)+'</code></div>';toast("Webhook created","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Create webhook"}}})}
+
+function openWsDetail(w){if(!w)return;
+$("d-title").textContent=(w.icon||"🏠")+" "+(w.name||"(unnamed)");$("d-sub").textContent="Workspace "+(w.id||"").slice(0,8)+" · "+(w.plan_type||"personal");
+let h='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Workspace</div><div class="kv"><div class="k">Name</div><div class="v">'+esc(w.name||"(unnamed)")+'</div><div class="k">Space ID</div><div class="v mono">'+esc(w.space_id||"—")+'</div><div class="k">Plan</div><div class="v">'+badge(w.plan_type)+'</div><div class="k">Trial</div><div class="v">'+(w.trial_active?'<span class="badge ok">active</span> until '+fmtTime(w.trial_ends_at):"—")+'</div><div class="k">Threads</div><div class="v">'+(w.thread_count||0)+'</div><div class="k">Created</div><div class="v">'+fmtTime(w.created_at)+'</div></div></div>';
+h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Account</div><div class="kv"><div class="k">Email</div><div class="v mono">'+esc(w.account_email||"—")+'</div><div class="k">User ID</div><div class="v mono">'+esc(w.account_user_id||"—")+'</div><div class="k">Status</div><div class="v">'+badge(w.account_status)+'</div></div></div>';
+if(w.api_key){h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">API Key</div><div class="api-key-box"><span class="key-text" id="key-text">'+maskKey(w.api_key)+'</span><button class="secondary" id="key-copy" style="font-size:11px;padding:.25rem .55rem">Copy</button></div></div>'}
+h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Quick actions</div>'+wsActionButtons(w)+'</div>';
+$("d-body").innerHTML=h;
+const kc=$("key-copy");if(kc)kc.addEventListener("click",()=>{navigator.clipboard.writeText(w.api_key).then(()=>toast("✓ Key copied","success"))});
+$("panel").classList.add("open");$("overlay").classList.add("open")}
+
+// ── Accounts tab ──
+function applyAcctFilter(){const q=$("acct-search").value.toLowerCase();acctFiltered=!q?accounts:accounts.filter(a=>a.email?.toLowerCase().includes(q)||a.user_id?.toLowerCase().includes(q));if(acctSelIdx>=acctFiltered.length)acctSelIdx=-1;renderAccounts()}
+function renderAccounts(){$("acct-count-label").textContent=acctFiltered.length+" of "+accounts.length+" accounts";if(!acctFiltered.length){$("acct-tbody").innerHTML='<tr><td colspan="6" class="empty">'+(accounts.length?"No matches":"No accounts yet")+'</td></tr>';return}
+$("acct-tbody").innerHTML=acctFiltered.map((a,i)=>{const sel=i===acctSelIdx?" selected":"";const wsCount=workspaces.filter(w=>w.account_id===a.id).length;const retryBtn=(a.status==="failed"||a.status==="retrying")?'<button class="tiny" data-action="retry" data-id="'+a.id+'">↻ Retry</button>':"";return'<tr class="row'+sel+'" data-idx="'+i+'"><td class="email">'+esc(a.email||"—")+'</td><td style="font-family:monospace;font-size:11px;color:var(--muted)">'+esc(a.user_id?a.user_id.slice(0,12)+"…":"—")+'</td><td>'+badge(a.status)+'</td><td style="text-align:center">'+wsCount+'</td><td class="actions"><button class="tiny" data-action="ws" data-id="'+a.id+'">+ Workspace</button><button class="tiny" data-action="relogin" data-id="'+a.id+'">🔑 Re-login</button>'+retryBtn+'</td><td class="created">'+fmtTime(a.created_at)+'</td></tr>'}).join("")}
+$("acct-tbody").addEventListener("click",e=>{const btn=e.target.closest("button.tiny");if(btn){e.stopPropagation();const action=btn.dataset.action;const id=btn.dataset.id;handleAcctAction(action,id);return}const tr=e.target.closest("tr.row");if(!tr)return;acctSelIdx=+tr.dataset.idx;renderAccounts();openAcctDetail(acctFiltered[acctSelIdx])});
+$("acct-search").addEventListener("input",applyAcctFilter);
+$("acct-refresh").addEventListener("click",()=>{refreshAll();toast("Refreshing…")});
+function handleAcctAction(action,id){const a=accounts.find(x=>x.id===id);if(!a)return;
+if(action==="ws"){openCreateWsModal(a)}
+else if(action==="relogin"){doRelogin(a)}
+else if(action==="retry"){doRetry(a)}}
+
+function openCreateWsModal(a){showModal('<h3>+ Create workspace on '+esc(a.email)+'</h3><div class="action-form"><div class="row"><div><label>Name</label><input id="m-name" value="My Workspace"></div><div><label>Icon</label><input id="m-icon" value="🏠" maxlength="4"></div></div><div class="row"><div><label>Plan type</label><select id="m-plan"><option value="personal">Personal</option><option value="business">Business (requires trial activation separately)</option></select></div></div><button id="m-submit">Create workspace</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const name=$("m-name").value.trim();if(!name){toast("Name required","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+$("m-submit").disabled=true;$("m-submit").textContent="Creating…";$("m-result").innerHTML='<span class="spinner"></span>';
+try{const r=await fetch("/api/accounts/"+a.id+"/workspaces",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,icon:$("m-icon").value,planType:$("m-plan").value})});const d=await r.json();if(d.ok){$("m-result").innerHTML='<div style="color:var(--ok)">✓ Created<br>Workspace ID: <code>'+esc(d.workspaceId)+'</code><br>Space ID: <code>'+esc(d.spaceId)+'</code></div>';toast("Workspace created","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Create workspace"}}})}
+
+async function doRelogin(a){if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+showModal('<h3>🔑 Re-login '+esc(a.email)+'</h3><p class="hint">Sends a new verification code to the email, then submits it to get a fresh session. The verification code will be displayed in the result.</p><div id="m-result"><button id="m-submit" class="secondary">Trigger re-login</button></div>',()=>{
+$("m-submit").onclick=async()=>{
+$("m-submit").disabled=true;$("m-submit").textContent="Working…";$("m-result").innerHTML='<span class="spinner"></span> Sending code + verifying…';
+try{
+const r=await fetch("/api/relogin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:a.email})});const d=await r.json();
+if(r.status===409&&d.conflict){
+$("m-result").innerHTML='<div style="color:var(--warn);margin-bottom:.5rem">⚠ Existing Notion session detected</div><div style="background:var(--code);border:1px solid var(--border);border-radius:5px;padding:.5rem .75rem;margin:.5rem 0;font-size:12px">'+d.cookies.map(c=>'<div><code>'+esc(c.name)+'</code>: '+esc(c.value)+'</div>').join('')+'</div><p class="hint">Clear the session cookies and retry?</p><div style="display:flex;gap:.5rem;margin-top:.8rem"><button id="m-clear" class="secondary">Clear & Retry</button><button id="m-cancel" class="secondary">Cancel</button></div>';
+$("m-clear").onclick=async()=>{$("m-result").innerHTML='<span class="spinner"></span> Clearing cookies + retrying…';
+try{await fetch("/api/clear-notion-cookies",{method:"POST"});
+const r2=await fetch("/api/relogin",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({email:a.email,force:true})});const d2=await r2.json();
+if(d2.ok){$("m-result").innerHTML='<div style="color:var(--ok)">✓ Re-login successful<br>Email: '+esc(d2.email)+'<br>User ID: <code>'+esc(d2.userId)+'</code><br>Verification code: <code style="font-weight:700;font-size:14px;background:var(--code);padding:2px 6px;border-radius:3px">'+esc(d2.verificationCode)+'</code></div>';toast("Re-login OK","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d2.error)+'</div>';toast("Failed","error")}}catch(e2){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e2.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Trigger re-login"}};
+$("m-cancel").onclick=()=>{$("m-submit").disabled=false;$("m-submit").textContent="Trigger re-login";$("m-result").innerHTML='<button id="m-submit" class="secondary">Trigger re-login</button>'};
+}else if(d.ok){
+$("m-result").innerHTML='<div style="color:var(--ok)">✓ Re-login successful<br>Email: '+esc(d.email)+'<br>User ID: <code>'+esc(d.userId)+'</code><br>Verification code (temp password): <code style="font-weight:700;font-size:14px;background:var(--code);padding:2px 6px;border-radius:3px">'+esc(d.verificationCode)+'</code><br><br>Use this code to log in manually at app.notion.com/login if needed.</div>';toast("Re-login OK","success");refreshAll();
+}else{
+$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+(d.hint?'<br><span style="color:var(--muted)">'+esc(d.hint)+'</span>':'')+'</div>';toast("Failed","error");
+}
+}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Trigger re-login"}
+};})}
+
+async function doRetry(a){if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+showModal('<h3>↻ Retry signup for '+esc(a.email)+'</h3><p class="hint">Retries from where it left off. '+(a.user_id&&a.token_v2?'This account has cookies from a previous signup — will skip the browser signup and go straight to workspace creation.':'No cookies found — will redo the full browser signup flow.')+'</p><div class="action-form"><div class="row"><div><label>Workspace name</label><input id="m-name" value="My Workspace"></div><div><label>Icon</label><input id="m-icon" value="🏠" maxlength="4"></div></div><button id="m-submit">Retry now</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{
+$("m-submit").disabled=true;$("m-submit").textContent="Retrying…";$("m-result").innerHTML='<span class="spinner"></span> Retrying…';
+try{const r=await fetch("/api/accounts/"+a.id+"/retry",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaceName:$("m-name").value,workspaceIcon:$("m-icon").value})});const d=await r.json();
+if(d.ok){$("m-result").innerHTML='<div style="color:var(--ok)">✓ Retry started<br>Job ID: <code>'+esc(d.jobId)+'</code><br>Watch the job status panel.</div>';toast("Retry started","success");refreshAll();$("modal-overlay").classList.remove("open")}
+else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Retry now"}}})}
+
+function openAcctDetail(a){if(!a)return;const myWs=workspaces.filter(w=>w.account_id===a.id);const myJobs=jobs.filter(j=>j.account_id===a.id).sort((x,y)=>y.created_at-x.created_at);const latestJob=myJobs[0];let result=null;try{result=JSON.parse(latestJob?.result||"{}")}catch{}const chat=result.steps?.find(s=>s.step==="ai_chat")?.chat;
+$("d-title").textContent=a.email||"—";$("d-sub").textContent="Account "+(a.id||"").slice(0,8)+" · "+(a.status||"—");
+let h='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Account '+badge(a.status)+'</div><div class="kv"><div class="k">Email</div><div class="v mono">'+esc(a.email||"—")+'</div><div class="k">User ID</div><div class="v mono">'+esc(a.user_id||"—")+'</div><div class="k">Created</div><div class="v">'+fmtTime(a.created_at)+'</div><div class="k">Workspaces</div><div class="v">'+myWs.length+'</div></div></div>';
+if(myWs.length){h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Workspaces</div>';myWs.forEach(w=>{h+='<div style="display:flex;align-items:center;gap:.5rem;padding:.4rem 0;border-bottom:1px solid var(--border)"><span style="font-size:18px">'+esc(w.icon||"🏠")+'</span><div style="flex:1"><div style="font-weight:600">'+esc(w.name||"(unnamed)")+'</div><div style="color:var(--muted);font-size:11px;font-family:monospace">'+esc(w.space_id||"")+'</div></div>'+badge(w.plan_type)+'</div>'});h+='</div>'}
+h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Quick actions</div><button class="tiny" onclick="handleAcctAction(\\'ws\\',\\''+a.id+'\\')">+ Workspace</button> <button class="tiny" onclick="handleAcctAction(\\'relogin\\',\\''+a.id+'\\')">🔑 Re-login</button></div>';
+if(chat){h+='<div style="margin-bottom:1rem"><div style="font-size:11px;text-transform:uppercase;color:var(--muted);font-weight:700;margin-bottom:.5rem">Latest chat</div><div style="background:var(--code);border:1px solid var(--border);border-radius:5px;padding:.65rem .75rem;font-size:12px"><div style="color:var(--muted);font-size:11px;margin-bottom:.4rem">Model: '+esc(chat.model||"—")+'</div><div style="white-space:pre-wrap;word-break:break-word">'+esc(chat.response||"(no response)")+'</div></div></div>'}
+$("d-body").innerHTML=h;
+$("panel").classList.add("open");$("overlay").classList.add("open")}
+
+// ── Batch create modals ──
+$("ws-batch-create").addEventListener("click",()=>{showModal('<h3>+ Batch create workspaces</h3><p class="hint">Creates multiple workspaces on an existing account. One per line, format: <code>name | icon | planType</code> (icon + planType optional, default 🏠 personal).</p><div class="action-form"><div class="row"><div><label>Account (email or ID)</label><input id="m-acct" placeholder="ntest@privatimail.com"></div></div><div class="row"><div><label>Workspaces (one per line)</label><textarea id="m-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="Team Alpha | 🚀 | personal&#10;Team Beta | 🎯 | personal&#10;Team Gamma | 💼 | business"></textarea></div></div><button id="m-submit">Create all</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const acct=$("m-acct").value.trim();const list=$("m-list").value.split("\\\\n").map(s=>s.trim()).filter(Boolean);if(!acct||!list.length){toast("Account + workspaces required","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+const workspaces=list.map(line=>{const parts=line.split("|").map(s=>s.trim());return{name:parts[0],icon:parts[1]||"🏠",planType:parts[2]||"personal"}});
+$("m-submit").disabled=true;$("m-submit").textContent="Creating…";$("m-result").innerHTML='<span class="spinner"></span> Creating '+workspaces.length+' workspaces…';
+try{const r=await fetch("/api/accounts/"+acct+"/workspaces/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({workspaces})});const d=await r.json();if(d.ok||d.results){let html='<div style="color:'+(d.failed?'var(--warn)':'var(--ok)')+';font-weight:600;margin-bottom:.4rem">'+d.succeeded+'/'+d.total+' succeeded</div>';d.results.forEach(r=>{html+='<div style="padding:.3rem 0;border-bottom:1px solid var(--border);font-size:12px">'+(r.ok?'✓':'✗')+' '+esc(r.name||"?")+(r.ok?' → <code>'+esc(r.spaceId.slice(0,12))+'…</code>':' <span style="color:var(--err)">'+esc(r.error)+'</span>')+'</div>'});$("m-result").innerHTML=html;toast(d.succeeded+" created","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Create all"}}})});
+
+$("acct-batch-create").addEventListener("click",()=>{showModal('<h3>+ Batch create accounts</h3><p class="hint">Creates multiple accounts in one call. Each line: <code>email | workspaceName | workspaceIcon</code> (all optional, auto-generated if blank).</p><div class="action-form"><div class="row"><div><label>Accounts (one per line)</label><textarea id="m-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="user1@privatimail.com | Team 1 | 🏠&#10;user2@privatimail.com | Team 2 | 🎯&#10;auto@privatimail.com | Team 3 | 💼"></textarea></div></div><button id="m-submit">Create accounts</button></div><div id="m-result" style="margin-top:.6rem"></div>',()=>{
+$("m-submit").onclick=async()=>{const list=$("m-list").value.split("\\\\n").map(s=>s.trim()).filter(Boolean);if(!list.length){toast("At least one account required","error");return}if(!extDot.classList.contains("ok")){toast("Extension not connected","error");return}
+const accounts=list.map(line=>{const parts=line.split("|").map(s=>s.trim());return{email:parts[0]||undefined,workspaceName:parts[1]||"My Workspace",workspaceIcon:parts[2]||"🏠"}});
+$("m-submit").disabled=true;$("m-submit").textContent="Creating… (this takes ~60s)";$("m-result").innerHTML='<span class="spinner"></span> Creating '+accounts.length+' accounts…';
+try{const r=await fetch("/api/accounts/batch",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({accounts})});const d=await r.json();if(d.results){let html='<div style="color:'+(d.failed?'var(--warn)':'var(--ok)')+';font-weight:600;margin-bottom:.4rem">'+d.succeeded+'/'+d.total+' succeeded</div>';d.results.forEach(r=>{html+='<div style="padding:.3rem 0;border-bottom:1px solid var(--border);font-size:12px">'+(r.ok?'✓':'✗')+' '+esc(r.email||"?")+(r.ok?' → user <code>'+esc(r.userId.slice(0,12))+'…</code>':' <span style="color:var(--err)">'+esc(r.error)+'</span>')+'</div>'});$("m-result").innerHTML=html;toast(d.succeeded+" created","success");refreshAll()}else{$("m-result").innerHTML='<div style="color:var(--err)">'+esc(d.error)+'</div>';toast("Failed","error")}}catch(e){$("m-result").innerHTML='<div style="color:var(--err)">'+esc(e.message)+'</div>'}finally{$("m-submit").disabled=false;$("m-submit").textContent="Create accounts"}}})});
+
+// ── Modal helper ──
+function showModal(html,onMount){const o=$("modal-overlay");const c=$("modal-content");c.innerHTML=html;o.classList.add("open");if(onMount)setTimeout(onMount,0)}
+$("modal-overlay").addEventListener("click",e=>{if(e.target===$("modal-overlay"))$("modal-overlay").classList.remove("open")});
+
+$("overlay").addEventListener("click",()=>{$("panel").classList.remove("open");$("overlay").classList.remove("open")});
+$("d-close").addEventListener("click",()=>{$("panel").classList.remove("open");$("overlay").classList.remove("open")});
+
+document.addEventListener("keydown",e=>{if(e.ctrlKey||e.metaKey||e.altKey)return;const t=e.target,tag=t.tagName,isInput=tag==="INPUT"||tag==="TEXTAREA"||tag==="SELECT";
+if(e.key==="Escape"){if($("modal-overlay").classList.contains("open")){$("modal-overlay").classList.remove("open");return}if($("panel").classList.contains("open")){$("panel").classList.remove("open");$("overlay").classList.remove("open");return}if(isInput)t.blur();return}
+if((e.key==="1"||e.key==="2"||e.key==="3")&&!(isInput&&t.tagName==="INPUT")){e.preventDefault();if(isInput)t.blur();switchView(e.key==="1"?"workspaces":e.key==="2"?"accounts":"create");return}
+if(isInput)return;
+if((e.key==="["||e.key==="]")&&curView==="create"){e.preventDefault();const cur=document.querySelector(".sub-tab.active")?.dataset.subview;if(e.key==="["){switchSubView(cur==="workspace"?"account":"account")}else{switchSubView(cur==="account"?"workspace":"workspace")}return}
+if(e.key==="j"||e.key==="ArrowDown"){e.preventDefault();const list=curView==="workspaces"?wsFiltered:acctFiltered;const idx=curView==="workspaces"?wsSelIdx:acctSelIdx;if(curView!=="workspaces"&&curView!=="accounts")switchView("workspaces");const newIdx=Math.min(list.length-1,idx+1);if(curView==="workspaces"){wsSelIdx=newIdx;renderWorkspaces()}else{acctSelIdx=newIdx;renderAccounts()}}
+if(e.key==="k"||e.key==="ArrowUp"){e.preventDefault();const list=curView==="workspaces"?wsFiltered:acctFiltered;const idx=curView==="workspaces"?wsSelIdx:acctSelIdx;const newIdx=Math.max(0,idx-1);if(curView==="workspaces"){wsSelIdx=newIdx;renderWorkspaces()}else{acctSelIdx=newIdx;renderAccounts()}}
+if(e.key==="Enter"&&((curView==="workspaces"&&wsSelIdx>=0)||(curView==="accounts"&&acctSelIdx>=0))){e.preventDefault();if(curView==="workspaces")openWsDetail(wsFiltered[wsSelIdx]);else openAcctDetail(acctFiltered[acctSelIdx])}
+if(e.key==="/"){e.preventDefault();switchView("workspaces");$("ws-search").focus()}
+if(e.key==="r"){e.preventDefault();refreshAll();toast("Refreshing…")}});
+window.addEventListener("DOMContentLoaded",()=>{startExtPoll();refreshAll()});
+</script>
+</body></html>`;

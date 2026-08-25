@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Notion Onboarding Worker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="header-row"><h1>Notion Onboarding Worker</h1><span class="ext-pill"><span class="ext-dot" id="ext-dot"></span><span id="ext-label">checking…</span></span></div>
+<div class="tabs">
+<button class="tab active" data-view="workspaces">Workspaces <span class="count" id="ws-count">0</span></button>
+<button class="tab" data-view="accounts">Accounts <span class="count" id="acct-count">0</span></button>
+<button class="tab" data-view="create">Create</button>
+</div>
+
+<div id="workspaces-view" class="view active">
+<div class="search-bar">
+<input id="ws-search" placeholder="Search workspaces by name, space_id, or account email… (/ to focus)">
+<select class="filter-select" id="ws-filter-plan"><option value="">All plans</option><option value="personal">Personal</option><option value="business">Business</option></select>
+<select class="filter-select" id="ws-filter-trial"><option value="">All</option><option value="active">Trial active</option><option value="expired">Trial expired</option><option value="none">No trial</option></select>
+<button class="secondary" id="ws-refresh">↻ Refresh</button>
+<button class="secondary" id="ws-batch-create">+ Batch create</button>
+<span id="ws-count-label" style="color:var(--muted);font-size:12px"></span>
+</div>
+<div style="border:1px solid var(--border);border-radius:var(--r);overflow:auto;max-height:65vh"><table><thead><tr><th>Workspace</th><th>Account</th><th>Plan</th><th>Trial</th><th>Threads</th><th>API Key</th><th>Actions</th><th>Created</th></tr></thead><tbody id="ws-tbody"><tr><td colspan="8" class="empty">Load workspaces…</td></tr></tbody></table></div>
+<p class="hint"><kbd>↑</kbd>/<kbd>↓</kbd> navigate · <kbd>Enter</kbd> details · <kbd>Esc</kbd> close · <kbd>/</kbd> search · <kbd>r</kbd> refresh</p>
+</div>
+
+<div id="accounts-view" class="view">
+<div class="search-bar">
+<input id="acct-search" placeholder="Search accounts by email or user_id…">
+<button class="secondary" id="acct-refresh">↻ Refresh</button>
+<button class="secondary" id="acct-batch-create">+ Batch create accounts</button>
+<span id="acct-count-label" style="color:var(--muted);font-size:12px"></span>
+</div>
+<div style="border:1px solid var(--border);border-radius:var(--r);overflow:auto;max-height:65vh"><table><thead><tr><th>Email</th><th>User ID</th><th>Status</th><th>Workspaces</th><th>Actions</th><th>Created</th></tr></thead><tbody id="acct-tbody"><tr><td colspan="6" class="empty">Load accounts…</td></tr></tbody></table></div>
+<p class="hint">Click a row for account details + session info. Click <strong>+ Batch create accounts</strong> for bulk signup.</p>
+</div>
+
+<div id="create-view" class="view">
+<div class="sub-tabs">
+<button class="sub-tab active" data-subview="account">Account</button>
+<button class="sub-tab" data-subview="workspace">Workspace</button>
+<span style="margin-left:auto;font-size:11px;color:var(--muted);align-self:center"><kbd>[</kbd>/<kbd>]</kbd> switch sub-tab</span>
+</div>
+
+<div id="sub-account" class="sub-view active">
+<div class="card" style="max-width:680px">
+<div class="mode-toggle" id="acct-mode-toggle">
+<button type="button" class="mode-btn active" data-mode="single">Single</button>
+<button type="button" class="mode-btn" data-mode="batch">Batch</button>
+</div>
+
+<div id="acct-single">
+<p class="hint" style="margin-top:0">Signs up a new Notion account + creates the first workspace + finishes onboarding screens. The browser tab opens automatically — hCaptcha auto-solves in invisible mode. No manual token paste needed.</p>
+<form id="form-account">
+<div class="field-grid">
+<div><label>Email (blank=auto)</label><input id="email" placeholder="user@privatimail.com" autofocus></div>
+<div><label>Workspace name</label><input id="wsName" value="My Workspace"></div>
+<div><label>Workspace icon</label><input id="wsIcon" value="🏠" maxlength="4"></div>
+</div>
+<p class="hint" style="margin:.4rem 0">A browser tab will open at <code>app.notion.com/signup</code>, the email will be filled automatically, and hCaptcha will auto-solve. If hCaptcha shows a challenge, solve it in the browser tab. The 6-digit code is fetched from the email worker automatically.</p>
+<button type="submit" id="submit-account">Create account</button>
+</form>
+</div>
+
+<div id="acct-batch" style="display:none">
+<p class="hint" style="margin-top:0">Creates multiple accounts in sequence. Each account gets its own workspace + onboarding. One per line: <code>email | workspaceName | workspaceIcon</code> (all optional, auto-generated if blank).</p>
+<form id="form-account-batch">
+<div class="field-grid">
+<div class="full"><label>Accounts (one per line)</label><textarea id="acct-batch-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="user1@privatimail.com | Team 1 | 🏠&#10;user2@privatimail.com | Team 2 | 🎯&#10;auto@privatimail.com | Team 3 | 💼"></textarea></div>
+</div>
+<p class="hint" style="margin:.4rem 0">Each account opens a browser tab sequentially. Solve hCaptcha if prompted. The whole batch takes ~60-300s depending on captcha + email delivery.</p>
+<button type="submit" id="submit-account-batch">Create accounts</button>
+</form>
+</div>
+</div>
+</div>
+
+<div id="sub-workspace" class="sub-view">
+<div class="card" style="max-width:680px">
+<div class="mode-toggle" id="ws-mode-toggle">
+<button type="button" class="mode-btn active" data-mode="single">Single</button>
+<button type="button" class="mode-btn" data-mode="batch">Batch</button>
+</div>
+
+<div id="ws-single">
+<p class="hint" style="margin-top:0">Adds a new workspace to an account that already exists. No signup, no chat — just the workspace.</p>
+<form id="form-workspace">
+<div class="field-grid">
+<div><label>Account</label><select id="ws-acct"><option value="">Loading accounts…</option></select></div>
+<div><label>Workspace name</label><input id="ws-name-new" placeholder="Team Alpha"></div>
+<div><label>Workspace icon</label><input id="ws-icon-new" value="🏠" maxlength="4"></div>
+<div><label>Plan type</label><select id="ws-plan-new"><option value="personal">Personal</option><option value="business">Business (requires separate trial activation)</option></select></div>
+</div>
+<button type="submit" id="submit-workspace">Create workspace</button>
+</form>
+</div>
+
+<div id="ws-batch" style="display:none">
+<p class="hint" style="margin-top:0">Creates multiple workspaces on an existing account. One per line: <code>name | icon | planType</code> (icon + planType optional, default 🏠 personal).</p>
+<form id="form-workspace-batch">
+<div class="field-grid">
+<div class="full"><label>Account</label><select id="ws-batch-acct"><option value="">Loading accounts…</option></select></div>
+<div class="full"><label>Workspaces (one per line)</label><textarea id="ws-batch-list" rows="6" style="width:100%;font-family:monospace;font-size:12px" placeholder="Team Alpha | 🚀 | personal&#10;Team Beta | 🎯 | personal&#10;Team Gamma | 💼 | business"></textarea></div>
+</div>
+<button type="submit" id="submit-workspace-batch">Create all workspaces</button>
+</form>
+</div>
+</div>
+</div>
+
+<div id="status" style="display:none"></div>
+<div id="job-wrap" style="display:none"></div>
+</div>
+
+<div class="detail-overlay" id="overlay"></div>
+<div class="detail-panel" id="panel"><div class="detail-head"><div style="flex:1"><div id="d-title" style="font-family:monospace;font-size:13px">—</div><div id="d-sub" style="color:var(--muted);font-size:11px">—</div></div><button class="secondary" id="d-close">×</button></div><div class="detail-body" id="d-body"></div></div>
+
+<div class="modal-overlay" id="modal-overlay">
+<div class="modal" id="modal-content"></div>
+</div>
+
+<div class="toast" id="toast"></div>
+<script src="app.js"></script>
+</body></html>

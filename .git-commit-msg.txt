@@ -1,0 +1,24 @@
+Port the battle-tested dev daemon (notion v0.8.4 run_bridge_aiohttp.py) + Zenrows evaluation
+
+Dev daemon (python-dev-daemon/):
+- bridge.py: VERBATIM port of notion v0.8.4's scripts/run_bridge_aiohttp.py
+  (2131 lines — every P0 fix preserved: WS supersede handling, watchdog,
+  heartbeats, HTTP-poll fallback, command queueing, SQLite persistence).
+  Two portability shims only: local CommandResult dataclass + guarded lazy
+  imports for the optional notion_onboarding package.
+- dashboard/ copied alongside (served at /).
+- docs/DAEMON.md: run/connect/drive guide incl. the sandbox preview-URL
+  flow (port 3000 = gateway default proxy target; WS upgrades at /).
+- Verified end-to-end: toy E2E (18 checks) against the FULL daemon (WS
+  connect, eval/fetch/macro.run round-trips, dashboard); gateway round-trip
+  through the :81 proxy → :3000 incl. WS upgrade and a simulated
+  extension ↔ /api/command result cycle.
+
+Zenrows (docs/ZENROWS-EVAL.md):
+- Empirically tested against app.notion.com/signup with residential IP +
+  real browser. Full form-drive CAN pass with zero captcha (test 3:
+  getLoginOptions → sendTemporaryPassword → code-entry view), but hCaptcha
+  enterprise challenged 2 of 3 attempts (challengeProvider:'hcaptcha').
+  Verdict: agent-side eyes + fallback driver; NOT an extension replacement,
+  and it cannot fix the email-body-code bottleneck (both Notion templates
+  keep the code out of the subject — confirmed with fresh logs).

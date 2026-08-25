@@ -451,6 +451,32 @@ total)" and "18 pytest tests pass" — but the test scripts
 4. **Phase 2** — CF Worker dashboard (HTTP-only, reads/writes the same
    Turso DB; no WS, no DO). Needs the user's Cloudflare account to deploy.
 
+### Live debugging via the dev daemon (the "act on the user's extension" mode)
+
+`python-dev-daemon/bridge.py` is a VERBATIM port of notion v0.8.4's
+run_bridge_aiohttp.py (all its P0 fixes preserved) — see docs/DAEMON.md.
+In the Z.ai sandbox: run it on :3000 (Caddy's default proxy target), the
+preview URL then serves the dashboard at `/` and the extension connects its
+WS to `wss://preview-<bot-id>.space-z.ai/` (buildWsUrl forces path `/` for
+*.space-z.ai — the gateway only upgrades WS there; verified end-to-end incl.
+command round-trips through the gateway). Drive the browser with
+`POST /api/command` (waits for the result). Etiquette: read-only inspection
+first (eval/fetch/cookies), one command at a time, no virtual clicks unless
+captcha demands them. When a live run fails: export the capture, turn the
+interesting events into fixtures (see §1.16).
+
+### Zenrows (agent-side web access, evaluated 2026-08-25)
+
+See docs/ZENROWS-EVAL.md. Verdict: genuinely passes Notion's outer defenses
+via residential IP + real browser (a full signup email-submit completed with
+zero captcha once), but hCaptcha enterprise challenges probabilistically
+(1/3 passes) — not reliable enough to replace the extension as the primary
+driver, and each passed attempt sends a REAL code email (reputation cost).
+Use it as agent-side eyes (json_response XHR capture from real sessions) and
+a fallback driver. Does NOT fix the email-body problem: both Notion
+templates ("Your Notion signup code" / "Your temporary Notion login code")
+put the code in the BODY.
+
 ## 4. Environment + workflow notes for the next agent
 
 ### 4.1 The sandbox environment

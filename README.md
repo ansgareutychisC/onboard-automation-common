@@ -124,9 +124,14 @@ E2E (defaults, full signup, Quick Exec, and daemon-driven remote control).
 
 ### Optional: the dev daemon (agent-driven remote control)
 
+A verbatim port of the battle-tested notion v0.8.4 bridge — see
+**[docs/DAEMON.md](docs/DAEMON.md)** for the full guide.
+
 ```bash
-python3 python-dev-daemon/bridge.py            # WS bridge + status page on :3000
-# connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
+python3 python-dev-daemon/bridge.py            # 0.0.0.0:3000 (Caddy proxy target)
+# connect the extension: ws://127.0.0.1:3000 locally, or the sandbox preview
+# URL (wss://preview-<bot-id>.space-z.ai/) — the daemon serves the dashboard
+# at / and the WS endpoint at / (and /ws).
 curl -X POST http://127.0.0.1:3000/api/command \
   -H 'Content-Type: application/json' \
   -d '{"type":"eval","function":"() => ({ title: document.title })"}'

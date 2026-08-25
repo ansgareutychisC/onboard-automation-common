@@ -42,3 +42,7 @@ secrets.json
 
 # Headless extension test artifacts
 tests/.tmp-chrome-profile/
+
+# Dev daemon local state
+python-dev-daemon/bridge.db
+python-dev-daemon/bridge.db-journal

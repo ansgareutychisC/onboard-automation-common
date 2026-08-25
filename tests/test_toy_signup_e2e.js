@@ -218,8 +218,8 @@ async function main() {
     check('extension connected to the dev daemon over WS', true);
     await wait(1500);  // let auth+connect messages land
 
-    const st = await fetchJson(`http://127.0.0.1:${DAEMON_PORT}/api/status`);
-    check('daemon sees the extension agent', (st.body.agents || []).length >= 1, JSON.stringify(st.body).slice(0, 300));
+    const st = await fetchJson(`http://127.0.0.1:${DAEMON_PORT}/api/extensions`);
+    check('daemon sees the extension agent', (st.body.extensions || []).length >= 1, JSON.stringify(st.body).slice(0, 300));
 
     // eval through the daemon
     let resp = await fetchJson(`http://127.0.0.1:${DAEMON_PORT}/api/command`, {
@@ -262,7 +262,7 @@ async function main() {
 
     // daemon status page renders
     const page = await fetch(`http://127.0.0.1:${DAEMON_PORT}/`).then((r) => r.text());
-    check('daemon status page renders (agents table)', /agentId|agent\(s\) connected/.test(page), page.slice(0, 200));
+    check('daemon dashboard renders at /', /<!doctype html/i.test(page) && /ext-dot|ws-count|acct-count/.test(page), page.slice(0, 200));
   } catch (err) {
     failures++;
     console.error('FATAL:', err && err.stack || err);
