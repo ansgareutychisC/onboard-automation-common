@@ -76,3 +76,24 @@ Reading the code from the email body. Options (user decision):
    domain, not the architecture). Best long-term fix.
 2. Hotmail IMAP/Graph access (the forward target) — needs Hotmail creds.
 3. Keep the human-in-the-loop `notion/submit-code` flow (works today).
+
+## Addendum (2026-08-25, session 2) — Zenrows as an AUTHENTICATED client
+
+Follow-up tested with a captured session (cookie replay of
+`token_v2`/`notion_user_id` via `custom_headers=true`):
+
+1. **Session replay works**: `POST /api/v3/getSpaces` through Zenrows
+   with the cookie header returns the full account payload (200).
+2. **The biz-trial "captcha" disappears on a clean IP**: the exact
+   `updateSubscription` body that the sandbox IP rejects with
+   `UserValidationError "Trial activation is not allowed."` returns
+   `200 {"subscriptionStatus":"trialing"}` through Zenrows — with
+   `captchaToken: ""`. The hCaptcha demand is IP-reputation-gated, not
+   a hard requirement.
+3. API shape change: `custom_headers` is now a **boolean**; the actual
+   headers go on the request to `api.zenrows.com` itself and are
+   forwarded. (Old JSON-blob format → `REQS004 invalid boolean`.)
+
+Verdict update: Zenrows = (a) agent-side eyes, (b) fallback signup
+driver, and now (c) **clean-IP relay for reputation-gated mutations**
+(trial activation). See `docs/POST-LOGIN-TAIL.md` §2.
