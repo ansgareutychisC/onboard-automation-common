@@ -1,152 +1,136 @@
 # onboard-automation-common
 
-A shared foundation for browser-driven onboarding automation tools. Consolidates the browser extension and bridge protocol from the legacy `notion-onboarding-automation` and `supabase-automation` projects into a single, service-agnostic base.
+A single, service-agnostic Chrome MV3 extension that drives onboarding
+automation for SaaS services (Notion first; Supabase and Todoist next). The
+extension runs **JSON macros** (sequences of `fetch` / `form.fill` /
+`xhr.intercept` / `retry` / `eval` steps) locally in your real browser — no
+backend required for the MVP.
+
+> Forked from the battle-tested `notion-onboarding-automation` v0.8.4
+> extension (commit `129dc11`) and generalized minimally. The macro runner and
+> its 23 command handlers are kept verbatim wherever possible — the value is
+> in the proven runtime, not in a rewrite.
 
 ## Why This Exists
 
-The legacy projects each duplicated ~3000 lines of extension + bridge code, differing only in ~5 lines of service-specific defaults (cookie domain, default URL, branding). Every bug fix had to be applied twice. Every new service would add another ~3000-line copy.
+The legacy projects each duplicated ~3000 lines of extension + bridge code.
+Every Notion stabilization round had to be re-lived per service. This repo
+consolidates the shared 95% once; each service contributes only its macros
+(JSON files under `extension/macros/<service>/`).
 
-`onboard-automation-common` consolidates the shared 95%:
-- The Chrome MV3 extension (2900 lines) is written **once**.
-- The bridge wire protocol is specified **once**.
-- The BridgeHub Durable Object + Python daemon are written **once**.
-- The async Python client is written **once**.
+Hard-won design principles (see `.agents/SKILL.md` for the full distilled
+knowledge):
 
-Each service (Notion, Supabase, Todoist, your-next-service) only writes the 5% that's actually different: the signup flow, the vendor API client, the dashboard, the D1 schema.
+- **WebSocket is dead on Cloudflare Workers free tier** — empirically proven
+  by 5+ P0 reconnect bugs in the notion repo. WS survives only in the local
+  Python dev daemon (dev/debug), gated behind `serverUrl`. Production is
+  HTTP-only (Phase 2, not built yet).
+- **Email verification is the #1 fragility source.** Services change email
+  templates without notice. The extraction logic is therefore a per-service
+  **macro input** (`extractionJs`), never extension code.
+- **The extension must be useful by itself**, even with no backend and no
+  database configured.
 
 ## What's Included
 
 ```
 onboard-automation-common/
-├── extension/                      # Chrome MV3 extension (the main deliverable)
-│   ├── manifest.json               # MV3, 8 permissions, no service branding
-│   ├── background.js               # Orchestrator: load handlers, wire connection
-│   ├── popup.{html,js}             # Config + status + structured log feed
-│   ├── sandbox.{html,js}           # Page-context zstd-native fetcher
+├── extension/                          # The Chrome MV3 extension (Phase 1)
+│   ├── manifest.json                   # "Onboard Automation Bridge" v0.9.0, ES module SW
+│   ├── background.js                   # Macro runner + 23 command handlers + WS (gated)
+│   ├── popup.{html,js}                 # Macro replay UI + Email & Storage config panel
+│   ├── sandbox.{html,js}               # Page-context fetch for zstd responses
 │   ├── lib/
-│   │   ├── protocol.js             # Command/message types (single source of truth)
-│   │   ├── connection.js           # WS+HTTP fallback, watchdog, idle healing, backoff
-│   │   ├── logger.js               # Structured logger (commandId, tabId, durationMs, traceId)
-│   │   └── send.js                 # sendResult/sendError/sendEvent/sendLog helpers
-│   └── handlers/                   # 9 modules, one per command group
-│       ├── fetch.js                # fetch + page.fetch (zstd handling)
-│       ├── tabs.js                 # tabs.open/close/list/focus
-│       ├── form.js                 # form.fill/click/wait/eval (React-safe + CDP)
-│       ├── xhr.js                  # xhr.intercept (one-shot CDP Network capture)
-│       ├── cookies.js              # cookies.get/getAll/set (no default domain)
-│       ├── screenshot.js           # tabId-aware screenshot (fixes legacy bug)
-│       ├── captcha.js              # multi-provider (hcaptcha/recaptcha/turnstile/cloudflare)
-│       ├── sandbox.js              # sandbox.open
-│       └── debug.js                # 11 activatable debug commands (HAR/console/network/trace/dom/storage/screenshot-fullpage)
-│
-├── worker-template/                # Cloudflare Worker + BridgeHub Durable Object
-│   ├── src/
-│   │   ├── index.ts                # Hono router with auth middleware
-│   │   ├── bridge-hub.ts           # DO with cross-channel pending-future correlation
-│   │   └── types.ts                # Protocol types (single source of truth for TS)
-│   ├── wrangler.toml.example
-│   ├── migrations/0001_init.sql    # Optional event_logs table
-│   └── README.md
-│
-├── python-template/                # Async Python client + dev daemon
-│   ├── onboard_common/
-│   │   ├── extension_bridge.py     # Async client mirroring all commands
-│   │   ├── protocol.py             # Python types matching TS
-│   │   └── exceptions.py           # Bridge exception hierarchy
-│   ├── scripts/
-│   │   ├── run_bridge.py           # aiohttp daemon (dev)
-│   │   └── daemonize.py            # Double-fork helper
-│   └── README.md
-│
-└── docs/
-    ├── PROTOCOL.md                 # Wire protocol spec
-    ├── ARCHITECTURE.md             # 3-tier design + resiliency stack
-    ├── DEBUGGING.md                # Activatable debug commands + usage patterns
-    └── MIGRATION.md                # How to migrate a legacy service to this base
+│   │   └── turso.js                    # Turso (libSQL) HTTP client — no-op when unconfigured
+│   └── macros/
+│       ├── _shared/
+│       │   └── wait-for-verification-email.json   # reusable email chunk (ImprovMX-based)
+│       └── notion/
+│           ├── signup.json             # signup + email verify + session capture (17 steps)
+│           ├── create-workspace.json   # workspace on an existing account
+│           ├── activate-trial.json     # 14-day trial (needs hCaptcha token)
+│           ├── create-api-key.json     # PAT creation
+│           └── full-onboarding.json    # full signup → onboarded (36 steps)
+├── tests/
+│   ├── test_macro_dryrun.js            # dry-run all macros vs HAR-captured responses
+│   ├── test_email_extraction_live.js   # extractionJs vs the live ImprovMX API
+│   ├── test_extension_headless.js      # full E2E in headless Chromium (Playwright)
+│   └── har_fixtures/                   # extracted HAR calls (notion API responses)
+├── docs/
+│   ├── REVAMP-PLAN.md                  # the plan (Phase 1-3)
+│   └── MACROS.md                       # macro format reference + chunk pattern
+└── .agents/
+    ├── SKILL.md                        # meta-agent knowledge (read this first)
+    └── SKILL-consumer.md               # reading *@priv.email via ImprovMX API
 ```
 
-## Key Improvements Over Legacy Extensions
+## Three Connection Modes
 
-| Aspect | Legacy (notion/supabase) | Unified (this project) |
-|--------|--------------------------|------------------------|
-| Extension lines per service | ~2000 (duplicated) | 0 (shared) |
-| Resiliency features | notion: full; supabase: partial | Full (best of both) |
-| Debug capability | `xhr.intercept` only (one-shot) | 11 activatable debug commands |
-| Captcha support | hCaptcha only | hCaptcha + reCAPTCHA + Turnstile + Cloudflare |
-| Cookie domain | hardcoded per service | derived from URL or caller-specified |
-| Screenshot tabId | ignored (captures active tab) | tabId-aware (focuses + restores) |
-| Protocol versioning | none | `protocolVersion: "1.0"` + capability advertisement |
-| Trace correlation | none | `traceId` flows through commands → logs → results → events |
-| Logging | free-text | structured (commandId, tabId, durationMs, traceId) |
-| Known bugs carried forward | screenshot ignores tabId; sandbox has stale hardcoded URL; dead permissions; cookie domain default | All fixed |
+1. **Standalone (default)** — `serverUrl` empty. Run macros from the popup;
+   optionally persist runs to Turso if configured. No backend, no WS.
+2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:8787`.
+   Agent-driven interactive debugging. Local only. (Daemon not yet ported —
+   Phase 1 leftover.)
+3. **Production via CF Worker (HTTP, Phase 2)** — polls `/api/poll`, POSTs
+   `/api/result`. No WS, no Durable Objects.
 
 ## Quick Start
 
 ### Use the Extension
 
-1. Copy `extension/` to your machine.
-2. Open `chrome://extensions`, enable Developer mode.
-3. Click "Load unpacked", select the `extension/` directory.
-4. Click the extension icon, paste your bridge server URL (e.g. `wss://your-worker.workers.dev`), click Connect.
+1. Open `chrome://extensions`, enable Developer mode.
+2. Click "Load unpacked", select the `extension/` directory.
+3. Click the extension icon → fill the **Email & Storage Config** panel:
+   - Email API URL: `https://api.improvmx.com/v3/domains/priv.email/logs?take=20`
+   - Email API token: `api:sk_...` (ImprovMX key; see `.agents/SKILL-consumer.md`)
+   - Turso URL/token: optional (persistence)
+4. Pick a preset → edit inputs → **Run Macro**.
 
-### Deploy the Worker
+Suggested order: `_shared/wait-for-verification-email` (infra test) →
+`notion/create-api-key` (simplest API flow, needs an active Notion session) →
+`notion/signup` → `notion/full-onboarding`.
 
-```bash
-cd worker-template/
-cp wrangler.toml.example wrangler.toml
-# Edit wrangler.toml — fill in database_id, name
-npm install
-wrangler login
-wrangler d1 create onboard-automation-bridge-db
-# Paste database_id into wrangler.toml
-wrangler d1 migrations apply DB
-wrangler deploy
-```
-
-### Use the Python Client
+### Run the Test Suite
 
 ```bash
-cd python-template/
-pip install -r requirements.txt
+# 1. Static dry-run of every macro against HAR-captured Notion responses
+node tests/test_macro_dryrun.js
+
+# 2. Extraction logic vs the live ImprovMX API (read-only)
+node tests/test_email_extraction_live.js
+
+# 3. Full E2E: real extension in headless Chromium (needs Playwright + Chromium)
+NODE_PATH=$(npm root -g) node tests/test_extension_headless.js
 ```
 
-```python
-import asyncio
-from onboard_common import ExtensionBridge
+All three currently pass: 6/6 macros (79/79 steps) in the dry-run, 23/23 live
+extraction checks, 21/21 headless E2E checks (extension load, config
+persistence, nested preset fetch, real macro execution with
+`chrome.debugger`-based eval, retry loop, Basic-auth email polling, code
+extraction, and the Turso persistence wire format against a mock).
 
-async def main():
-    async with ExtensionBridge("http://127.0.0.1:8787") as bridge:
-        await bridge.wait_for_extension(timeout=60)
-        result = await bridge.tabs_open("https://example.com")
-        tab_id = result.get("tabId")
-        await bridge.form_fill(tab_id, "input[name=email]", "user@example.com")
-        await bridge.form_click(tab_id, "button[type=submit]")
+## Current State
 
-asyncio.run(main())
-```
-
-## Current Scope (What's Done)
-
-This is the **most basic step** from the user's scope-down plan:
-- ✅ Unified the extension into one service-agnostic dumb sandbox
-- ✅ Robust client/server protocol with full resiliency stack (watchdog, idle healing, backoff, SOS HTTP fallback, cross-channel correlation)
-- ✅ Widest possible debugging/execution/traceability capability built in (11 activatable debug commands) — activatable/deactivatable per command
-- ✅ Compatible with all current services (notion, supabase) and likely future services (multi-provider captcha, no hardcoded domains, capability advertisement)
-
-## Future Scope (Not Yet Done)
-
-Per the user's plan, these come later:
-- 🔲 One common gateway URL so the extension always connects to the same place (currently each service has its own worker.dev URL — user pastes manually)
-- 🔲 Service-layer batch mode (orchestrate onboarding for multiple services in one run, with configurable ordering)
-- 🔲 Backend unification (currently each service has its own worker — that's OK because backends don't cause friction)
-- 🔲 Per-service switching in the popup (currently: paste a different worker URL to switch services)
+- ✅ Phase 1: fork + generalize the extension, Turso client, email
+  verification chunk (provider-agnostic, ImprovMX), macro chunking
+  (`notion/` + `_shared/`), popup config panel, automated test suite
+- 🔲 Live Notion signup verification in a real browser (needs user-side
+  testing: hCaptcha enterprise + real email delivery to `*@priv.email`)
+- 🔲 Supabase macro (`macros/supabase/signup.json` — hCaptcha solved by user)
+- 🔲 Todoist macro (`macros/todoist/signup.json` — pure HTTP, no DOM)
+- 🔲 Python dev daemon port (`python-dev-daemon/`)
+- 🔲 Phase 2: CF Worker dashboard (HTTP-only, reads the same Turso DB)
 
 ## Documentation
 
-- **[docs/PROTOCOL.md](docs/PROTOCOL.md)** — Wire protocol spec. The single source of truth for command shapes, result envelopes, message types, and HTTP routes.
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — 3-tier design (extension ↔ bridge ↔ orchestrator), resiliency stack, file inventory, comparison to legacy projects.
-- **[docs/DEBUGGING.md](docs/DEBUGGING.md)** — The 11 activatable debug commands with usage patterns and "when to use what" decision table.
-- **[docs/MIGRATION.md](docs/MIGRATION.md)** — Step-by-step guide for migrating a legacy service (notion/supabase) to this common base. Estimated 6–11 hours per service, removes ~3550 lines of duplication.
+- **[docs/REVAMP-PLAN.md](docs/REVAMP-PLAN.md)** — the full plan with all 5
+  open questions answered; §6 has the step-by-step.
+- **[docs/MACROS.md](docs/MACROS.md)** — macro format reference, the shared
+  chunk pattern, testing workflow.
+- **[.agents/SKILL.md](.agents/SKILL.md)** — meta knowledge for agents
+  working on this repo. Read this first.
+- **[.agents/SKILL-consumer.md](.agents/SKILL-consumer.md)** — how to read
+  `*@priv.email` via the ImprovMX API.
 
 ## License
 

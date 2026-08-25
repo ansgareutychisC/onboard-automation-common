@@ -323,10 +323,13 @@ subject:
 ```
 
 **Important**: the macro `inputs` must include:
-- `emailWorkerUrl`: `https://api.improvmx.com/v3/domains/priv.email` (the
-  ImprovMX API base for this domain)
-- `emailWorkerToken`: `api:sk_691ff26633c94b0d80523433afe3a369` (Basic auth)
-- `recipient`: the specific alias used (e.g. `admin@priv.email`)
+- `emailWorkerUrl`: `https://api.improvmx.com/v3/domains/priv.email/logs?take=20`
+  (the full inbox endpoint — the shared email chunk fetches it verbatim)
+- `emailWorkerToken`: `api:sk_691ff26633c94b0d80523433afe3a369` (raw Basic pair —
+  the chunk's `email-auth` step base64-encodes it into the Authorization header;
+  a ready-made `Basic ...`/`Bearer ...` header value also works)
+- `email`: the specific alias used (e.g. `admin@priv.email`)
 
-The popup config panel (TODO per REVAMP-PLAN.md §6 Step 5) will have fields
-for these so the user doesn't paste them per-macro-run.
+The popup's **Email & Storage config panel** (IMPLEMENTED) has fields for
+`emailWorkerUrl` + `emailWorkerToken` — configure once, and every email-flow
+preset pre-fills and runs with them (per-run inputs still win if set).

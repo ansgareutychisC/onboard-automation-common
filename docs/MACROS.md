@@ -88,7 +88,11 @@ Templates are resolved before the step is executed. If a template path doesn't r
 
 ### The `eval` Command
 
-`eval` runs JavaScript in the extension's service worker context. It receives an `args` object and must return a JSON-serializable value. Use it for:
+`eval` runs JavaScript **in a tab's main world** via `chrome.debugger` + CDP
+`Runtime.evaluate` (MV3 service workers forbid `eval()`, so this is the only
+safe path). It receives an `args` object and must return a JSON-serializable
+value. At least one http(s) tab must be open (the macro itself usually opens
+one via `tabs.open`). Use it for:
 - Parsing fetch response bodies (e.g., extracting a `spaceId` from `createSpace` response)
 - Generating UUIDs and timestamps
 - Building request bodies from previous results
@@ -109,28 +113,37 @@ For polling (e.g., waiting for a verification email), use the `retry` block:
 
 ```json
 {
-  "id": "get-code",
+  "id": "get-verification-code",
   "cmd": "retry",
   "timeoutMs": 180000,
-  "intervalMs": 4000,
+  "intervalMs": 10000,
   "condition": "result && result.code != null",
   "steps": [
     {
       "id": "fetch-email",
       "cmd": "fetch",
-      "url": "{{inputs.emailWorkerUrl}}/emails?address={{inputs.email}}",
+      "url": "{{inputs.emailWorkerUrl}}",
       "method": "GET",
-      "headers": {"Authorization": "Bearer {{inputs.emailWorkerToken}}"}
+      "headers": {"Authorization": "{{email-auth.header}}"},
+      "credentials": "omit"
     },
     {
       "id": "parse-code",
       "cmd": "eval",
-      "function": "(args) => { const d = JSON.parse(args.body); const text = d.results[0]?.text_body || ''; const m = text.match(/\\d{6}/); return { code: m ? m[0] : null }; }",
-      "args": { "body": "{{fetch-email.body}}" }
+      "function": "{{inputs.extractionJs}}",
+      "args": {
+        "body": "{{fetch-email.body}}",
+        "email": "{{inputs.email}}",
+        "sinceMs": "{{email-now.now}}"
+      }
     }
   ]
 }
 ```
+
+Note: `timeoutMs` / `intervalMs` / `condition` are read literally by the runner
+(they are NOT template-resolved) — keep them concrete values. The interval of
+10s respects ImprovMX's ~10 req/min limit on the `/logs` endpoint.
 
 The `condition` is a JS expression evaluated against `{ result, results, inputs }` where:
 - `result` = the result of the last sub-step
@@ -154,63 +167,97 @@ By default, if a step fails (returns `ok: false` or throws), the macro aborts. T
 
 ## Preset Macros
 
-The extension bundles these presets in `extension/macros/`:
+The extension bundles presets under `extension/macros/`, organized by service:
 
 | Preset | Description | Requires |
 |---|---|---|
-| `signup-onboard` | Full signup + onboarding flow (HAR Phase A-K) | Email worker token |
-| `create-workspace` | Create a workspace on an existing account | Active session |
-| `activate-trial` | Activate 14-day business trial | hCaptcha P1_ token |
-| `create-api-key` | Create a PAT | Active session + spaceId |
+| `notion/signup` | Signup + email verification + session capture (17 steps) | Email API config |
+| `notion/create-workspace` | Create a workspace on an existing account | Active session |
+| `notion/activate-trial` | Activate 14-day business trial | hCaptcha P1_ token |
+| `notion/create-api-key` | Create a PAT | Active session + spaceId |
+| `notion/full-onboarding` | Full signup → onboarded flow (36 steps, HAR Phase A-K) | Email API config |
+| `_shared/wait-for-verification-email` | The email chunk standalone — tests the email infra | Email API config |
+
+## Shared Chunks
+
+`macros/_shared/` holds **reusable step sequences** that get *inlined* into
+service macros (the runner has no macro-calling-macro — by design). The
+chunk of record is `wait-for-verification-email`:
+
+- **Provider-agnostic by construction**: the inbox API endpoint
+  (`emailWorkerUrl`), credentials (`emailWorkerToken`), and the extraction
+  logic (`extractionJs`) are all macro **inputs**. Switching email providers
+  or fixing a changed email template = editing inputs, never extension code.
+- **Stable step ids**: `email-auth`, `email-now`, `get-verification-code`,
+  `fetch-email`, `parse-code`, `log-got-code`. Macros that inline the chunk
+  keep these ids so downstream `{{refs}}` are predictable.
+- **Auth handling**: `email-auth` (eval) accepts either a raw Basic pair
+  (`api:sk_...`) or a ready-made `Basic ...`/`Bearer ...` header value and
+  produces the `Authorization` header.
+- **Stale-code guard**: `email-now` stamps `Date.now()` before the retry
+  starts; the extraction skips emails older than that, so re-running a
+  macro seconds later can't pick up the previous run's code.
+- When a service's email format changes, edit that service macro's
+  `extractionJs` input default (e.g. `macros/notion/signup.json`) — one file,
+  no extension code changes, no lockstep updates.
+
+To inline the chunk into a new service macro: copy the chunk's `steps` array
+into the macro and override the `extractionJs` input with service-specific
+extraction logic. Keep the step ids.
 
 ## Python Integration
 
-The Python backend can generate the same macros via `notion_onboarding.macros`:
-
-```python
-from notion_onboarding.macros import build_signup_onboard_macro
-
-macro = build_signup_onboard_macro(
-    email="test@privatimail.com",
-    workspace_name="My Space",
-    email_worker_url="https://mail-api.privatimail.com",
-    email_worker_token="...",
-)
-
-# Option A: send to extension via WS (single message, runs locally)
-bridge.send({"type": "macro.run", "macro": macro, "inputs": {}})
-
-# Option B: save to file for the user to paste into the popup
-import json
-with open("my-macro.json", "w") as f:
-    json.dump(macro, f, indent=2)
-
-# Option C: execute step-by-step via WS (current approach, for debuggability)
-# (The existing Python methods in onboarding.py already do this)
-```
+The Python dev daemon (WS, agent-driven interactive debugging) is planned for
+`python-dev-daemon/` — a port of notion v0.8.4's `scripts/run_bridge_aiohttp.py`,
+gated behind `serverUrl` (empty by default = standalone mode; the extension
+never attempts a WS connection unless configured). Until then, the extension
+runs standalone from the popup.
 
 ## Testing Workflow
 
-1. **First test with `create-api-key`** (simplest, 8 steps, no email polling):
+### Automated (no browser needed)
+
+```bash
+# 1. Static dry-run of every macro against HAR-captured responses
+#    (template resolution, request-body shape, extraction logic, lint)
+node tests/test_macro_dryrun.js
+
+# 2. Live ImprovMX extraction tests (hits the real API read-only)
+node tests/test_email_extraction_live.js
+
+# 3. Full E2E: loads the real extension in headless Chromium (needs Playwright)
+NODE_PATH=$(npm root -g) node tests/test_extension_headless.js
+```
+
+### Manual (in your browser)
+
+1. **First `notion/create-api-key`** (simplest, 8 steps, no email polling):
    - Log into Notion in your browser
    - Open the extension popup → Macro Replay section
-   - Select "create-api-key" preset
+   - Select "notion/create-api-key" preset
    - Fill in inputs: `{"spaceId": "your-space-id"}`
    - Click "Run Macro"
    - Verify the result shows an `ntn_*` token
 
-2. **Then test with `create-workspace`** (15 steps, no signup):
+2. **Then `_shared/wait-for-verification-email`** (email infra only):
+   - Fill the Email & Storage config panel (ImprovMX URL + `api:sk_...` token)
+   - Select the chunk preset, set inputs `{"email": "you@priv.email"}`
+   - Run — should extract the code from the latest matching email
+
+3. **Then `notion/create-workspace`** (10 steps, no signup):
    - Log into Notion
-   - Select "create-workspace" preset
+   - Select "notion/create-workspace" preset
    - Fill in inputs: `{"workspaceName": "Test Space"}`
    - Run — verify a new workspace appears in your Notion sidebar
 
-3. **Then test with `signup-onboard`** (34 steps, full flow):
-   - Fill in all inputs (email, workspace name, email worker token)
-   - Run — this opens a signup tab, fills the email, polls for the code, submits it, then does all the API calls
+4. **Then `notion/signup` / `notion/full-onboarding`** (17 / 36 steps):
+   - Fill the config panel + inputs (email, workspace name)
+   - Run — this opens a signup tab, fills the email, polls for the code,
+     submits it, then (full-onboarding) does all the API calls
    - Verify the account is created and onboarding is cleared
 
-4. **Iterate**: if a step fails, check the result panel + diagnostics log. Edit the macro JSON and re-run.
+5. **Iterate**: if a step fails, check the result panel + diagnostics log.
+   Edit the macro JSON and re-run.
 
 ## Architecture
 

@@ -50,18 +50,28 @@ the macro JSON's `eval` step source, `popup.js` DEFAULT_INPUTS, and
 `run_bridge_aiohttp.py`). Updating all 4 in lockstep was the painful
 stabilization the user lived through.
 
-**The fix (decided, not yet implemented):** the extraction logic is a
-per-service `eval` step in each service's macro. Notion's extraction JS
-lives in `macros/notion/signup.json`; supabase's lives in
-`macros/supabase/signup.json`; todoist's lives in `macros/todoist/signup.json`.
-When a service changes its email format, you edit ONE JSON file. No
-extension code changes. The extension just provides the `eval` primitive
-(CDP `Runtime.evaluate` in a tab's main world — MV3-safe, since SW CSP
-forbids `eval()`).
-
-The reusable chunk is `macros/_shared/wait-for-verification-email.json` —
-it polls the email worker and runs the `extractionJs` input. Each service's
-macro overrides `extractionJs` with its own regex/logic.
+**The fix (IMPLEMENTED, commit 6fd13f3):** the extraction logic is a
+per-service macro INPUT (`extractionJs`), not extension code.
+- `macros/_shared/wait-for-verification-email.json` holds the canonical
+  email chunk (step ids: `email-auth`, `email-now`, `get-verification-code`,
+  `fetch-email`, `parse-code`, `log-got-code`).
+- Each service macro INLINES the chunk's steps (no macro-calling-macro —
+  that's a complexity trap) and overrides `extractionJs` in its own
+  `inputs` (notion's lives in `macros/notion/signup.json` +
+  `full-onboarding.json`).
+- When a service changes its email format, you edit ONE JSON file's
+  `extractionJs` input (or override it per-run in the popup inputs textarea).
+  No extension code changes. The extension just provides the `eval`
+  primitive (CDP `Runtime.evaluate` in a tab's main world — MV3-safe, since
+  SW CSP forbids `eval()`).
+- Provider config is also inputs: `emailWorkerUrl` (the FULL inbox endpoint
+  including query string) + `emailWorkerToken` (raw Basic pair `api:sk_...`
+  OR a ready-made `Basic ...`/`Bearer ...` header). The `email-auth` eval
+  step builds the header via `btoa` and fails with a clear message when
+  the token is empty.
+- The `email-now` step stamps `Date.now()` before the retry starts; the
+  extraction skips emails older than that (`sinceMs` filter) so a re-run
+  seconds later can't pick up the PREVIOUS run's code.
 
 ### 1.3 Email worker URL is per-domain — never hardcode `privatimail.com`
 
@@ -114,7 +124,7 @@ onboarding" flows are flat macros that inline the chunk steps, or the
 popup runs N macros in sequence (playlist is a UI concept, not a macro
 format concept).
 
-### 1.5 The `retry` block's condition eval needs an open tab
+### 1.5 The `retry` block's condition eval needs an open tab — and its config fields are NOT templates
 
 MV3 service workers forbid `eval()` and `new Function()`. The `retry`
 block evaluates its `condition` expression via `chrome.debugger.attach` +
@@ -126,6 +136,15 @@ condition — open any web page first"`.
 blocks, make sure the user (or the macro itself via `tabs.open`) has at
 least one http(s) tab open before the retry fires. This is a documented
 runtime gotcha, not a bug.
+
+**Also:** `executeRetryBlock` reads `timeoutMs` / `intervalMs` /
+`condition` LITERALLY from the step JSON — they are never template-resolved
+(only sub-step args are). Keep them concrete values; `{{inputs.x}}` in
+those fields silently becomes undefined → defaults.
+
+**Polling interval vs ImprovMX rate limit:** ImprovMX `/logs` allows ~10
+req/min on the free plan. The chunk polls at `intervalMs: 10000` (6/min).
+Don't lower it much — a 429 backoff is worse than waiting.
 
 ### 1.6 `getCaptchaToken` is hCaptcha-only — both current services use hCaptcha
 
@@ -170,7 +189,33 @@ fork uses notion's monolithic background.js, which may not have this fix).
 `docs/v1-design/handlers/debug.js` if it survived, or re-derive from the
 peer-review-3 findings in the worklog).
 
-### 1.10 Don't trust commit messages that reference files that don't exist
+### 1.11 Headless extension testing WORKS — use `channel: 'chromium'`
+
+`tests/test_extension_headless.js` loads the real extension in headless
+Chromium via Playwright and drives the popup end-to-end (config panel →
+preset → Run Macro → result assertions), with local mock ImprovMX + Turso
+servers. Two non-obvious facts that make it work:
+
+1. **`chromium.launchPersistentContext(..., { channel: 'chromium' })` is
+   REQUIRED.** Plain `headless: true` without a channel uses headless-shell,
+   which **silently ignores `--load-extension`** — the service worker never
+   registers and you waste an hour wondering why. With `channel: 'chromium'`
+   you get the full binary in new-headless mode; MV3 extensions load fine.
+2. **`chrome.debugger.attach` works alongside Playwright's own CDP session.**
+   The extension attaches its debugger to a tab target while Playwright
+   drives the browser through its own sessions — no conflict. `eval` steps
+   (CDP Runtime.evaluate in the tab's main world) run normally.
+
+The test needs an http(s) tab open (the mock server's index page serves as
+the eval target). `btoa` exists in real tab contexts — if you simulate
+evals in a Node `vm` sandbox, you must add `btoa`/`atob` yourself
+(see the harnesses for the pattern).
+
+**Implication:** most extension behavior is now machine-testable without
+the user. What genuinely needs the user: real Notion signup (hCaptcha
+enterprise, real IP, real email delivery to `*@priv.email`).
+
+### 1.12 Don't trust commit messages that reference files that don't exist
 
 The notion repo's commit `91b75cb` claims "All 4 macros pass (56/56 steps
 total)" and "18 pytest tests pass" — but the test scripts
@@ -236,35 +281,53 @@ total)" and "18 pytest tests pass" — but the test scripts
 
 ## 3. What's done vs what's next
 
-### Done (commit `fd095cf` on `origin/main`)
+### Done (commits `fd095cf` → `dea71d5` on `origin/main`)
 - Forked notion v0.8.4 extension verbatim into `extension/`
 - Renamed manifest → "Onboard Automation Bridge" v0.9.0
 - Generalized: empty `serverUrl` default, cookie domain derived from URL,
   removed hardcoded email worker token from popup defaults
 - Added `extension/lib/turso.js` (Turso HTTP client, no-op when not configured)
-- Made `background.js` an ES module (`"type": "module"`)
-- Wired Turso into macro runner (recordMacroRun + recordStepResult at
-  success + failure finalization points)
-- Deleted v1 chassis (extension/, worker-template/, python-template/,
-  v1 docs)
-- `docs/REVAMP-PLAN.md` — the full plan, all 5 open questions answered
-- `docs/MACROS.md` — forked from notion v0.8.4
+- Made `background.js` an ES module (`"type": "module"`), wired Turso into
+  the macro runner (recordMacroRun + recordStepResult)
+- Deleted v1 chassis; `docs/REVAMP-PLAN.md` + `docs/MACROS.md` in place
+- **Email verification chunk** (`macros/_shared/wait-for-verification-email.json`):
+  provider-agnostic (emailWorkerUrl / emailWorkerToken / extractionJs are all
+  macro INPUTS), ImprovMX-based, Basic auth built by the `email-auth` eval
+  step, stale-code guard via `email-now` sinceMs, 10s poll interval
+  (ImprovMX /logs rate limit ~10 req/min)
+- **Macro chunking**: `notion/signup.json` (17 steps: signup + email verify +
+  session capture), `notion/full-onboarding.json` (36 steps — the
+  battle-tested v0.8.4 sequence with the new email chunk),
+  `notion/create-workspace|activate-trial|create-api-key.json` (moved under
+  `notion/` + `service` field for Turso). Step ids unchanged from v0.8.4.
+- **Popup config panel**: emailWorkerUrl / emailWorkerToken / tursoUrl /
+  tursoToken, debounced persistence to chrome.storage.local; email config
+  pre-fills preset inputs and merges into macro inputs at run time
+  (per-run values win); preset dropdown grouped Notion + Shared chunks
+- **Test suite — ALL PASSING**:
+  - `tests/test_macro_dryrun.js` — 6/6 macros, 79/79 steps vs HAR fixtures,
+    template-ref lint clean (recursive, walks retry sub-steps)
+  - `tests/test_email_extraction_live.js` — 23/23 checks vs the live
+    ImprovMX API (real response shape + synthetic Notion subjects)
+  - `tests/test_extension_headless.js` — 21/21 checks: real extension in
+    headless Chromium, full popup → config → preset → run → result flow,
+    chrome.debugger evals, retry loop, Basic-auth polling, code extraction,
+    Turso persistence wire format vs mock pipeline endpoint
 
-### Next (per REVAMP-PLAN.md §6)
-1. **Email verification chunk** — refactor into
-   `macros/_shared/wait-for-verification-email.json` with `extractionJs`
-   as a macro input. Remove the duplicate regex from `signup-onboard.json`.
-2. **Macro chunking** — break `signup-onboard.json` (288 lines, 34 steps)
-   into `notion/signup.json` + `notion/create-workspace.json` +
-   `notion/activate-trial.json` + `notion/create-api-key.json` +
-   `notion/full-onboarding.json`.
-3. **Popup config panel** — add fields for `emailWorkerUrl`,
-   `emailWorkerToken`, `tursoUrl`, `tursoToken`, `devUrl` with persistence.
-4. **Live Notion test** — load extension in Chrome, run signup macro,
-   verify end-to-end. **Use priv.email addresses, not privatimail.com
-   (blocked by Notion).**
-5. **Then supabase** — write `macros/supabase/signup.json`.
-6. **Then todoist** — `macros/todoist/signup.json` (pure HTTP, no DOM).
+### Next
+1. **Live Notion test (USER-SIDE — the only remaining integration step)** —
+   load extension in Chrome, fill the Email & Storage config, run
+   `notion/signup`. **Use `*@priv.email` addresses, not privatimail.com
+   (blocked by Notion).** Everything machine-testable has been tested.
+2. **Then supabase** — write `macros/supabase/signup.json` (needs the
+   extension — hCaptcha required; user solves it manually, form
+   auto-submits).
+3. **Then todoist** — `macros/todoist/signup.json` (pure HTTP, no DOM, no
+   captcha).
+4. **Python dev daemon port** — `python-dev-daemon/` from notion v0.8.4's
+   `scripts/run_bridge_aiohttp.py` (WS, local only, agent-driven debug).
+5. **Phase 2** — CF Worker dashboard (HTTP-only, reads/writes the same
+   Turso DB; no WS, no DO).
 
 ## 4. Environment + workflow notes for the next agent
 
@@ -421,32 +484,38 @@ onboard-automation-common/
 │   └── SKILL-consumer.md         ← priv.email / ImprovMX consumer skill
 ├── docs/
 │   ├── REVAMP-PLAN.md            ← the full plan, all questions answered
-│   └── MACROS.md                 ← macro format reference (forked from notion v0.8.4)
+│   └── MACROS.md                 ← macro format reference + chunk pattern
 ├── extension/                    ← the actual Chrome MV3 extension (Phase 1)
 │   ├── manifest.json             ← "Onboard Automation Bridge" v0.9.0, ES module
 │   ├── background.js             ← 2758 lines — macro runner + 23 cmd handlers + WS (gated)
-│   ├── popup.html / popup.js     ← macro replay UI + config panel (config panel TODO)
+│   ├── popup.html / popup.js     ← macro replay UI + Email & Storage config panel
 │   ├── sandbox.html / sandbox.js ← page-context fetch for zstd-native
 │   ├── lib/
 │   │   └── turso.js              ← Turso HTTP client (no-op when not configured)
-│   ├── macros/                   ← the chunked macros (NOTION-SPECIFIC — to be chunked)
-│   │   ├── signup-onboard.json   ← 288 lines, 34 steps — the full Notion flow
-│   │   ├── create-workspace.json
-│   │   ├── activate-trial.json
-│   │   └── create-api-key.json
+│   ├── macros/
+│   │   ├── _shared/
+│   │   │   └── wait-for-verification-email.json  ← the reusable email chunk
+│   │   └── notion/
+│   │       ├── signup.json       ← 17 steps: signup + email verify + session capture
+│   │       ├── create-workspace.json
+│   │       ├── activate-trial.json
+│   │       ├── create-api-key.json
+│   │       └── full-onboarding.json ← 36 steps: the full v0.8.4 flow
 │   └── icons/                    ← placeholder PNGs
-├── README.md                     ← project overview (needs update for v2)
-└── .gitignore                    ← includes secrets protection
+├── tests/
+│   ├── test_macro_dryrun.js      ← dry-run all macros vs HAR fixtures + lint
+│   ├── test_email_extraction_live.js ← extractionJs vs live ImprovMX
+│   ├── test_extension_headless.js ← full E2E, real extension in headless Chromium
+│   └── har_fixtures/             ← extracted HAR calls (notion API responses)
+├── README.md                     ← project overview (current for v2)
+└── .gitignore                    ← includes secrets protection + test artifacts
 ```
 
-**Not yet created (per REVAMP-PLAN.md §6):**
-- `extension/macros/_shared/wait-for-verification-email.json` — the reusable email chunk
-- `extension/macros/notion/` — chunked notion macros
+**Not yet created:**
 - `extension/macros/supabase/` — supabase macros
 - `extension/macros/todoist/` — todoist macros
 - `python-dev-daemon/` — the local dev daemon (fork from notion v0.8.4's `scripts/run_bridge_aiohttp.py`)
 - `worker-v2/` — Phase 2 CF Worker (HTTP-only, reads from Turso)
-- Popup config panel UI
 
 ## 8. Quick bootstrap for a fresh sandbox
 
@@ -464,8 +533,6 @@ cat .agents/SKILL-consumer.md
 # 3. (Optional) clone the notion reference repo for comparison
 cd /home/z/my-project
 git clone https://github.com/ansgareutychisC/notion-onboarding-automation.git notion-ref
-# OR if you only need to read specific files (no full clone):
-# curl -s https://raw.githubusercontent.com/ansgareutychisC/notion-onboarding-automation/main/extension/background.js
 
 # 4. Verify the extension loads (syntax check)
 cd /home/z/my-project/onboard-automation-common
@@ -473,11 +540,20 @@ for f in extension/background.js extension/popup.js extension/sandbox.js extensi
   node --check "$f" || echo "FAIL: $f"
 done
 
-# 5. Load the extension in Chrome
-# - chrome://extensions → Developer mode → Load unpacked → select extension/
-# - Click the extension icon → paste a macro JSON → Run Macro
+# 5. Run the test suite (all three should pass on a clean checkout)
+node tests/test_macro_dryrun.js                      # 6/6 macros vs HAR fixtures
+node tests/test_email_extraction_live.js             # 23/23 vs live ImprovMX (read-only)
+NODE_PATH=$(npm root -g) node tests/test_extension_headless.js   # 21/21 E2E (needs Playwright)
+# NOTE the headless test requires channel:'chromium' — plain headless uses
+# headless-shell which silently ignores --load-extension (see §1.11).
 
-# 6. For dev/debug with the Python daemon (Phase 1, not yet ported):
+# 6. Load the extension in Chrome (user-side live test)
+# - chrome://extensions → Developer mode → Load unpacked → select extension/
+# - Click the extension icon → fill the Email & Storage Config panel
+#   (ImprovMX URL + api:sk_... token, see .agents/SKILL-consumer.md)
+# - Pick a preset → edit inputs → Run Macro
+
+# 7. For dev/debug with the Python daemon (not yet ported):
 # - The daemon doesn't exist in our repo yet — port it from notion-ref/scripts/run_bridge_aiohttp.py
 # - OR just use the extension standalone for now
 ```
