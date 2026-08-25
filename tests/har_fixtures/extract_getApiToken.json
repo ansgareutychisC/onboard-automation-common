@@ -1,0 +1,120 @@
+{
+  "har_file": "/home/z/my-project/repos/notion-automation/_har/automate.notion.getApiToken.har",
+  "extracted_count": 5,
+  "calls": [
+    {
+      "seq": 1,
+      "started": "2026-08-12T01:36:13.663Z",
+      "method": "POST",
+      "path": "/api/v3/getPersonalAccessTokenCapabilityOptions",
+      "status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "notion-audit-log-platform": "web",
+        "notion-client-version": "23.13.20260811.2055",
+        "x-notion-active-user-header": "3bad872b-594c-81d6-b8b5-00023ad77466",
+        "x-notion-space-id": "08552080-df19-810f-a284-000300b91020"
+      },
+      "reqBody": {
+        "spaceId": "08552080-df19-810f-a284-000300b91020"
+      },
+      "respBody": {
+        "canGrantNotionApi": true,
+        "canGrantManageWorkers": true
+      }
+    },
+    {
+      "seq": 2,
+      "started": "2026-08-12T01:36:16.559Z",
+      "method": "POST",
+      "path": "/api/v3/getPersonalAccessTokenCapabilityOptions",
+      "status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "notion-audit-log-platform": "web",
+        "notion-client-version": "23.13.20260811.2055",
+        "x-notion-active-user-header": "3bad872b-594c-81d6-b8b5-00023ad77466",
+        "x-notion-space-id": "2f26615b-7c9f-8156-8ec5-00034ba364ae"
+      },
+      "reqBody": {
+        "spaceId": "2f26615b-7c9f-8156-8ec5-00034ba364ae"
+      },
+      "respBody": {
+        "canGrantNotionApi": true,
+        "canGrantManageWorkers": true
+      }
+    },
+    {
+      "seq": 3,
+      "started": "2026-08-12T01:36:16.560Z",
+      "method": "POST",
+      "path": "/api/v3/getPersonalAccessTokenCapabilityOptions",
+      "status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "notion-audit-log-platform": "web",
+        "notion-client-version": "23.13.20260811.2055",
+        "x-notion-active-user-header": "3bad872b-594c-81d6-b8b5-00023ad77466",
+        "x-notion-space-id": "08552080-df19-810f-a284-000300b91020"
+      },
+      "reqBody": {
+        "spaceId": "08552080-df19-810f-a284-000300b91020"
+      },
+      "respBody": {
+        "canGrantNotionApi": true,
+        "canGrantManageWorkers": true
+      }
+    },
+    {
+      "seq": 4,
+      "started": "2026-08-12T01:36:22.804Z",
+      "method": "POST",
+      "path": "/api/v3/createDeveloperPersonalIntegration",
+      "status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "notion-audit-log-platform": "web",
+        "notion-client-version": "23.13.20260811.2055",
+        "x-notion-active-user-header": "3bad872b-594c-81d6-b8b5-00023ad77466",
+        "x-notion-space-id": "08552080-df19-810f-a284-000300b91020"
+      },
+      "reqBody": {
+        "name": "new-pat",
+        "spaceId": "08552080-df19-810f-a284-000300b91020",
+        "capabilities": {
+          "notionApi": true,
+          "manageWorkers": true
+        },
+        "expiration": "1_year"
+      },
+      "respBody": {
+        "pointer": {
+          "id": "3ba52080-df19-8116-addd-0027a2de59f4",
+          "table": "bot",
+          "spaceId": "08552080-df19-810f-a284-000300b91020"
+        },
+        "expiresAt": 1818034582865
+      }
+    },
+    {
+      "seq": 5,
+      "started": "2026-08-12T01:36:23.440Z",
+      "method": "POST",
+      "path": "/api/v3/getBotToken",
+      "status": 200,
+      "headers": {
+        "content-type": "application/json",
+        "notion-audit-log-platform": "web",
+        "notion-client-version": "23.13.20260811.2055",
+        "x-notion-active-user-header": "3bad872b-594c-81d6-b8b5-00023ad77466",
+        "x-notion-space-id": "08552080-df19-810f-a284-000300b91020"
+      },
+      "reqBody": {
+        "botId": "3ba52080-df19-8116-addd-0027a2de59f4"
+      },
+      "respBody": {
+        "token": "ntn_MOCKED0000000000000000000000000000000000000000000"
+      }
+    }
+  ]
+}

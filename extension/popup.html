@@ -70,13 +70,21 @@
       text-transform: none; letter-spacing: 0;
     }
     .input-group { display: flex; gap: 6px; }
-    input[type="text"], select {
+    input[type="text"], input[type="password"], select {
       flex: 1; padding: 5px 9px; min-width: 0;
       border: 1px solid #ddd; border-radius: 5px;
       font-size: 11px; font-family: 'SF Mono', Monaco, monospace;
       outline: none;
     }
-    input[type="text"]:focus, select:focus { border-color: #4285f4; }
+    input[type="text"]:focus, input[type="password"]:focus, select:focus { border-color: #4285f4; }
+    .config-row { margin-bottom: 5px; }
+    .config-row label {
+      display: block; font-size: 10px; color: #666;
+      margin-bottom: 2px;
+    }
+    .config-row input { width: 100%; }
+    .config-saved { font-size: 9px; color: #0f9d58; margin-left: 6px; visibility: hidden; }
+    .config-saved.show { visibility: visible; }
     textarea {
       width: 100%; padding: 5px 7px;
       border: 1px solid #ddd; border-radius: 5px;
@@ -178,6 +186,27 @@
       </div>
 
       <div class="section">
+        <h2>Email &amp; Storage Config <span class="config-saved" id="configSaved">✓ saved</span></h2>
+        <div class="config-row">
+          <label for="emailWorkerUrl">Email API URL (inbox endpoint, incl. query)</label>
+          <input type="text" id="emailWorkerUrl" placeholder="https://api.improvmx.com/v3/domains/priv.email/logs?take=20" />
+        </div>
+        <div class="config-row">
+          <label for="emailWorkerToken">Email API token (raw pair <code>api:sk_...</code> or full <code>Basic ...</code> header)</label>
+          <input type="password" id="emailWorkerToken" placeholder="api:sk_..." autocomplete="off" />
+        </div>
+        <div class="config-row">
+          <label for="tursoUrl">Turso DB URL (optional — persistence)</label>
+          <input type="text" id="tursoUrl" placeholder="https://your-db-yourorg.tur.so" />
+        </div>
+        <div class="config-row">
+          <label for="tursoToken">Turso token (optional)</label>
+          <input type="password" id="tursoToken" placeholder="eyJ..." autocomplete="off" />
+        </div>
+        <div class="hint">Auto-saved to chrome.storage.local. Email config is injected into macro inputs at run time (your per-run inputs win). Turso config is read directly by the background worker.</div>
+      </div>
+
+      <div class="section">
         <h2>Activity</h2>
         <div class="stats">
           <div class="stat">
@@ -245,17 +274,23 @@
           <label style="font-size:11px;color:#666;display:block;margin-bottom:4px;">Preset:</label>
           <select id="macroPreset" style="width:100%;padding:5px 8px;font-size:12px;">
             <option value="">— Select a preset —</option>
-            <option value="signup-onboard">signup-onboard (full signup + onboarding)</option>
-            <option value="create-workspace">create-workspace (on existing account)</option>
-            <option value="activate-trial">activate-trial (needs hCaptcha token)</option>
-            <option value="create-api-key">create-api-key (PAT creation)</option>
+            <optgroup label="Notion">
+              <option value="notion/signup">signup (email verify + session capture)</option>
+              <option value="notion/create-workspace">create-workspace (existing account)</option>
+              <option value="notion/activate-trial">activate-trial (needs hCaptcha token)</option>
+              <option value="notion/create-api-key">create-api-key (PAT creation)</option>
+              <option value="notion/full-onboarding">full-onboarding (signup → onboarded)</option>
+            </optgroup>
+            <optgroup label="Shared chunks">
+              <option value="_shared/wait-for-verification-email">wait-for-verification-email (infra test)</option>
+            </optgroup>
           </select>
         </div>
 
         <div style="margin-bottom:6px;">
           <label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Inputs (JSON):</label>
-          <textarea id="macroInputs" rows="4" style="font-size:11px;" placeholder='{"email":"test@privatimail.com","workspaceName":"My Space"}'></textarea>
-          <div class="hint">Email worker URL + token are pre-filled. Just change email + workspace name.</div>
+          <textarea id="macroInputs" rows="4" style="font-size:11px;" placeholder='{"email":"you@priv.email","workspaceName":"My Space"}'></textarea>
+          <div class="hint">Email API URL + token auto-fill from the config panel (left) when left empty here.</div>
         </div>
 
         <div style="margin-bottom:6px;">
@@ -277,9 +312,9 @@
       <div class="section">
         <h2>Quick Start</h2>
         <div class="instructions">
-          <strong>A. Macro Replay (local):</strong> Pick a preset → edit inputs → Run Macro.<br>
-          <strong>B. Backend-driven:</strong> Start Python backend → Connect above → backend drives commands.<br><br>
-          <strong>Testing order:</strong> Start with <code>create-api-key</code> (simplest, 8 steps). Then <code>signup-onboard</code> (full flow, 34 steps).
+          <strong>A. Macro Replay (local):</strong> Fill the Email &amp; Storage config (left) → pick a preset → edit inputs → Run Macro.<br>
+          <strong>B. Backend-driven:</strong> Start Python dev daemon → Connect above → daemon drives commands.<br><br>
+          <strong>Testing order:</strong> <code>wait-for-verification-email</code> (infra only) → <code>notion/create-api-key</code> (simplest API flow) → <code>notion/signup</code> → <code>notion/full-onboarding</code>.
         </div>
       </div>
 

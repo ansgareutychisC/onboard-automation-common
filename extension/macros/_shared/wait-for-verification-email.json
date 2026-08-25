@@ -1,0 +1,65 @@
+{
+  "name": "wait-for-verification-email",
+  "service": "shared",
+  "description": "SHARED CHUNK — polls the email inbox API until a verification code is extracted, then exposes it as {{get-verification-code.result.code}}. Provider-agnostic: the API endpoint (emailWorkerUrl) and the extraction logic (extractionJs) are macro INPUTS, so switching email providers or fixing a changed email format means editing inputs, not extension code. Default provider: ImprovMX (priv.email). Inline these steps into a service macro (signup etc.) and override extractionJs per service. The emailWorkerToken input is the raw Basic-auth pair (e.g. 'api:sk_...') or a ready-made 'Basic ...'/'Bearer ...' header value.",
+  "inputs": {
+    "email": "",
+    "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
+    "emailWorkerToken": "",
+    "extractionJs": "(args) => { try { const data = JSON.parse(args.body); const logs = data.logs || data.results || []; const sinceMs = Number(args.sinceMs) || 0; const recipient = (args.email || '').toLowerCase(); let best = null; for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; if (!best || created > best.created) best = { created, subject: log.subject || '', id: log.id }; } if (!best) return { code: null, reason: logs.length ? 'no email newer than sinceMs for this recipient' : 'no emails yet', logCount: logs.length }; const subj = best.subject; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\b.{0,20}?(?:code|passcode|token)/i, /(?:login|verification|verify|signup|sign[- ]?up|passcode|pass|security|access|one[- ]?time|temporary|auth)\\s+(?:code|passcode|token)[^A-Za-z0-9]{0,20}([A-Za-z0-9]{4,10})\\b/i, /\\bcode(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'subject', subject: subj.slice(0, 100), logId: best.id }; } return { code: null, reason: 'no code pattern in subject', subject: subj.slice(0, 100), logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }"
+  },
+  "steps": [
+    {
+      "id": "email-auth",
+      "cmd": "eval",
+      "function": "(args) => { const t = (args.token || '').trim(); if (!t) return { ok: false, error: 'emailWorkerToken input is empty — set it in the popup config panel (Email API token)' }; if (/^(basic|bearer)\\s+/i.test(t)) return { header: t }; try { return { header: 'Basic ' + btoa(t) }; } catch (e) { return { ok: false, error: 'cannot build Authorization header (non-Latin1 token?): ' + e.message }; } }",
+      "args": {
+        "token": "{{inputs.emailWorkerToken}}"
+      }
+    },
+    {
+      "id": "email-now",
+      "cmd": "eval",
+      "function": "() => { return { now: Date.now() }; }",
+      "args": {}
+    },
+    {
+      "id": "get-verification-code",
+      "cmd": "retry",
+      "timeoutMs": 180000,
+      "intervalMs": 10000,
+      "condition": "result && result.code != null",
+      "steps": [
+        {
+          "id": "fetch-email",
+          "cmd": "fetch",
+          "url": "{{inputs.emailWorkerUrl}}",
+          "method": "GET",
+          "headers": {
+            "Authorization": "{{email-auth.header}}"
+          },
+          "credentials": "omit",
+          "timeoutMs": 15000
+        },
+        {
+          "id": "parse-code",
+          "cmd": "eval",
+          "function": "{{inputs.extractionJs}}",
+          "args": {
+            "body": "{{fetch-email.body}}",
+            "email": "{{inputs.email}}",
+            "sinceMs": "{{email-now.now}}"
+          }
+        }
+      ]
+    },
+    {
+      "id": "log-got-code",
+      "cmd": "log",
+      "message": "Got verification code",
+      "data": {
+        "code": "{{get-verification-code.result.code}}"
+      }
+    }
+  ]
+}

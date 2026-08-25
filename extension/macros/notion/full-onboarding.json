@@ -1,14 +1,16 @@
 {
-  "name": "signup-onboard",
-  "description": "Full signup + onboarding flow. Opens Notion signup page, fills email, gets verification code from email worker, submits it, then creates workspace + space_view + finishes onboarding (matching HAR Phase A-K). After this, the account is fully onboarded and ready for use. This macro REPLACES the Python run_full() flow — it's the same sequence of API calls, just executed locally by the extension.",
+  "name": "full-onboarding",
+  "service": "notion",
+  "description": "Full Notion signup + onboarding flow (the battle-tested 34-step signup-onboard macro from notion v0.8.4, with the email-verification chunk swapped to the shared ImprovMX-based chunk). Opens the Notion signup page, fills email, gets the verification code from the email API, submits it, then creates workspace + space_view + finishes onboarding (matching HAR Phase A-K). After this, the account is fully onboarded and ready for use.",
   "inputs": {
-    "email": "test@privatimail.com",
-    "workspaceName": "My Workspace",
-    "workspaceIcon": "🏠",
-    "emailWorkerUrl": "https://mail-api.privatimail.com",
-    "emailWorkerToken": "Rr6wmFK1FRPkYQv3ZZb6eIbcoG3fincB",
+    "email": "",
+    "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
+    "emailWorkerToken": "",
+    "extractionJs": "(args) => { try { const data = JSON.parse(args.body); const logs = data.logs || []; const sinceMs = Number(args.sinceMs) || 0; const recipient = (args.email || '').toLowerCase(); for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; const subj = log.subject || ''; const sender = (log.sender && log.sender.email) || ''; if (!/notion/i.test(sender) && !/notion/i.test(subj)) continue; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\s*(?:Notion\\s*)?(?:login|verification|signup|pass)?\\s*code/i, /(?:login|verification|signup|pass)\\s*code(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i, /code[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'notion-subject', subject: subj.slice(0, 100), logId: log.id }; } } return { code: null, reason: logs.length ? 'no Notion code in recent subjects' : 'no emails yet', logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }",
     "locale": "en-US",
-    "timezone": "America/Los_Angeles"
+    "timezone": "America/Los_Angeles",
+    "workspaceName": "My Workspace",
+    "workspaceIcon": "🏠"
   },
   "steps": [
     {
@@ -51,25 +53,46 @@
       "timeoutMs": 30000
     },
     {
+      "id": "email-auth",
+      "cmd": "eval",
+      "function": "(args) => { const t = (args.token || '').trim(); if (!t) return { ok: false, error: 'emailWorkerToken input is empty — set it in the popup config panel (Email API token)' }; if (/^(basic|bearer)\\s+/i.test(t)) return { header: t }; try { return { header: 'Basic ' + btoa(t) }; } catch (e) { return { ok: false, error: 'cannot build Authorization header (non-Latin1 token?): ' + e.message }; } }",
+      "args": {
+        "token": "{{inputs.emailWorkerToken}}"
+      }
+    },
+    {
+      "id": "email-now",
+      "cmd": "eval",
+      "function": "() => { return { now: Date.now() }; }",
+      "args": {}
+    },
+    {
       "id": "get-verification-code",
       "cmd": "retry",
       "timeoutMs": 180000,
-      "intervalMs": 4000,
+      "intervalMs": 10000,
       "condition": "result && result.code != null",
       "steps": [
         {
           "id": "fetch-email",
           "cmd": "fetch",
-          "url": "{{inputs.emailWorkerUrl}}/emails?address={{inputs.email}}&limit=5&include_body=true",
+          "url": "{{inputs.emailWorkerUrl}}",
           "method": "GET",
-          "headers": { "Authorization": "Bearer {{inputs.emailWorkerToken}}" },
+          "headers": {
+            "Authorization": "{{email-auth.header}}"
+          },
+          "credentials": "omit",
           "timeoutMs": 15000
         },
         {
           "id": "parse-code",
           "cmd": "eval",
-          "function": "(args) => { try { const data = JSON.parse(args.body); if (!data.results || !data.results.length) return { code: null, reason: 'no emails yet' }; const email = data.results[0]; const text = (email.text_body || '') + '\\n' + (email.html_body || ''); const layers = [ { name: 'html_pre', regex: /<pre[^>]*font-family:\\s*monospace[^>]*>\\s*([A-Za-z0-9]{4,10})\\s*<\\/pre>/i }, { name: 'text_line', regex: /^[ \\t]*([A-Za-z0-9]{4,10})[ \\t]*$/m }, { name: 'contextual', regex: /(?:login\\s+code|verification\\s+code|temporary\\s+code|passcode|signup\\s+code).{0,30}?([A-Za-z0-9]{4,10})\\b/i } ]; for (const layer of layers) { const m = text.match(layer.regex); if (m) { const code = m[1]; if (code.length >= 4 && code.length <= 10 && /^[A-Za-z0-9]+$/.test(code)) return { code }; } } return { code: null, reason: 'all extraction layers failed — Notion may have changed the email format' }; } catch(e) { return { code: null, error: e.message }; } }",
-          "args": { "body": "{{fetch-email.body}}" }
+          "function": "{{inputs.extractionJs}}",
+          "args": {
+            "body": "{{fetch-email.body}}",
+            "email": "{{inputs.email}}",
+            "sinceMs": "{{email-now.now}}"
+          }
         }
       ]
     },
@@ -77,7 +100,9 @@
       "id": "log-got-code",
       "cmd": "log",
       "message": "Got verification code",
-      "data": { "code": "{{get-verification-code.result.code}}" }
+      "data": {
+        "code": "{{get-verification-code.result.code}}"
+      }
     },
     {
       "id": "fill-code",
@@ -110,39 +135,45 @@
       "id": "extract-creds",
       "cmd": "eval",
       "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
-      "args": { "cookies": "{{get-cookies.cookies}}" }
+      "args": {
+        "cookies": "{{get-cookies.cookies}}"
+      }
     },
     {
       "id": "log-creds",
       "cmd": "log",
       "message": "Session captured",
-      "data": { "userId": "{{extract-creds.userId}}", "tokenV2": "{{extract-creds.tokenV2}}" }
+      "data": {
+        "userId": "{{extract-creds.userId}}",
+        "tokenV2": "{{extract-creds.tokenV2}}"
+      }
     },
-
     {
       "id": "gen-ids-1",
       "cmd": "eval",
       "function": "() => { return { requestId: crypto.randomUUID(), txId: crypto.randomUUID(), ts: Date.now() }; }",
       "args": {}
     },
-
     {
       "id": "set-profile-name",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/saveTransactionsMain",
       "method": "POST",
-      "headers": { "Content-Type": "application/json" },
+      "headers": {
+        "Content-Type": "application/json"
+      },
       "body": "{\"requestId\":\"{{gen-ids-1.requestId}}\",\"transactions\":[{\"id\":\"{{gen-ids-1.txId}}\",\"debug\":{\"userAction\":\"onboardingHelpers.setProfileData\",\"clientCommitTimeMs\":{{gen-ids-1.ts}}},\"operations\":[{\"pointer\":{\"table\":\"notion_user\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[],\"command\":\"update\",\"args\":{\"name\":\"{{inputs.workspaceName}}\"}}]}]}",
       "credentials": "include",
       "timeoutMs": 15000
     },
-
     {
       "id": "create-space",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/createSpace",
       "method": "POST",
-      "headers": { "Content-Type": "application/json" },
+      "headers": {
+        "Content-Type": "application/json"
+      },
       "body": "{\"name\":\"{{inputs.workspaceName}}\",\"icon\":\"{{inputs.workspaceIcon}}\",\"planType\":\"personal\",\"planSelection\":\"personal\",\"initialPersona\":\"unfilled\",\"domainType\":\"professional\",\"deviceId\":\"{{extract-creds.deviceId}}\",\"deviceType\":\"web-desktop\",\"source\":\"handle_root_redirect\"}",
       "credentials": "include",
       "timeoutMs": 30000
@@ -151,28 +182,33 @@
       "id": "parse-space-id",
       "cmd": "eval",
       "function": "(args) => { try { const d = JSON.parse(args.body); if (!d.spaceId) return { ok: false, error: 'No spaceId in createSpace response', body: args.body.slice(0, 300) }; return { ok: true, spaceId: d.spaceId }; } catch(e) { return { ok: false, error: e.message }; } }",
-      "args": { "body": "{{create-space.body}}" }
+      "args": {
+        "body": "{{create-space.body}}"
+      }
     },
     {
       "id": "log-space-created",
       "cmd": "log",
       "message": "Space created",
-      "data": { "spaceId": "{{parse-space-id.spaceId}}" }
+      "data": {
+        "spaceId": "{{parse-space-id.spaceId}}"
+      }
     },
-
     {
       "id": "gen-space-view-ids",
       "cmd": "eval",
       "function": "() => { return { uuid: crypto.randomUUID(), requestId: crypto.randomUUID(), txId: crypto.randomUUID(), ts: Date.now() }; }",
       "args": {}
     },
-
     {
       "id": "create-space-view",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/saveTransactionsMain",
       "method": "POST",
-      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{parse-space-id.spaceId}}" },
+      "headers": {
+        "Content-Type": "application/json",
+        "x-notion-space-id": "{{parse-space-id.spaceId}}"
+      },
       "body": "{\"requestId\":\"{{gen-space-view-ids.requestId}}\",\"transactions\":[{\"id\":\"{{gen-space-view-ids.txId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\",\"debug\":{\"userAction\":\"spaceActions.createSpace\",\"clientCommitTimeMs\":{{gen-space-view-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"space_view\",\"id\":\"{{gen-space-view-ids.uuid}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\"},\"path\":[],\"command\":\"set\",\"args\":{\"id\":\"{{gen-space-view-ids.uuid}}\",\"version\":1,\"space_id\":\"{{parse-space-id.spaceId}}\",\"notify_mobile\":true,\"notify_desktop\":true,\"notify_email\":true,\"parent_id\":\"{{extract-creds.userId}}\",\"parent_table\":\"user_root\",\"alive\":true,\"first_joined_space_time\":{{gen-space-view-ids.ts}},\"joined\":true,\"settings\":{\"notify_email_digest\":true,\"notify_home_digest_email\":true}}},{\"pointer\":{\"table\":\"user_root\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"space_views\"],\"command\":\"listAfter\",\"args\":{\"id\":\"{{gen-space-view-ids.uuid}}\"}},{\"pointer\":{\"table\":\"user_root\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"space_view_pointers\"],\"command\":\"keyedObjectListAfter\",\"args\":{\"value\":{\"table\":\"space_view\",\"id\":\"{{gen-space-view-ids.uuid}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\"}}}]}]}",
       "credentials": "include",
       "timeoutMs": 15000
@@ -181,22 +217,25 @@
       "id": "log-space-view-created",
       "cmd": "log",
       "message": "Space view created (the critical missing piece!)",
-      "data": { "spaceViewId": "{{gen-space-view-ids.uuid}}" }
+      "data": {
+        "spaceViewId": "{{gen-space-view-ids.uuid}}"
+      }
     },
-
     {
       "id": "gen-thread-ids",
       "cmd": "eval",
       "function": "() => { return { uuid: crypto.randomUUID(), traceId: crypto.randomUUID(), msgId: crypto.randomUUID(), configId: crypto.randomUUID(), contextId: crypto.randomUUID(), titleId: crypto.randomUUID(), now: new Date().toISOString() }; }",
       "args": {}
     },
-
     {
       "id": "initiate-onboarding-agent-chat",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/runInferenceTranscript",
       "method": "POST",
-      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{parse-space-id.spaceId}}" },
+      "headers": {
+        "Content-Type": "application/json",
+        "x-notion-space-id": "{{parse-space-id.spaceId}}"
+      },
       "body": "{\"traceId\":\"{{gen-thread-ids.traceId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\",\"transcript\":[{\"id\":\"{{gen-thread-ids.configId}}\",\"type\":\"config\",\"value\":{\"type\":\"workflow\",\"enableAgentAutomations\":true,\"enableAgentIntegrations\":true,\"enableCustomAgents\":true,\"enableExperimentalIntegrations\":false,\"enableScriptAgent\":true,\"enableScriptAgentAdvanced\":false,\"enableScriptAgentSearchConnectorsInCustomAgent\":false,\"enableScriptAgentGoogleDriveInCustomAgent\":false,\"enableScriptAgentGoogleDriveOAuthInCustomAgent\":false,\"enableScriptAgentSlack\":true,\"enableScriptAgentMcpServers\":true,\"enableAgentDiffs\":true,\"enableCsvAttachmentSupport\":true,\"showDatabaseAgentsDiscoverability\":false,\"enableAgentThreadTools\":false,\"enableCrdtOperations\":false,\"enableAgentCardCustomization\":true,\"enableSystemPromptAsPage\":false,\"enableUserSessionContext\":false,\"enableLargeToolResultComputerOffload\":false,\"enableScriptAgentGtm\":false,\"enablePitCrewTableViewTool\":false,\"enableComputer\":false,\"enableCustomAgentCreateGuidanceV2\":true,\"enableSoftwareFactoryPage\":false,\"enableAgentGenerateImage\":false,\"enableQueryCalendar\":false,\"enableQueryMail\":false,\"enableMailExplicitToolCalls\":true,\"enableMailNotificationPreferences\":false,\"enableMailAgentMultiProviderSupport\":true,\"enableNotionMailDeprecated\":false,\"enableWebResearch\":false,\"useRulePrioritization\":true,\"availableConnectors\":[],\"searchScopes\":[{\"type\":\"everything\"}],\"useWebSearch\":false,\"isHipaa\":false,\"internetAccess\":false,\"manageWorkers\":false,\"useReadOnlyMode\":false,\"writerMode\":false,\"modelFromUser\":false,\"isCustomAgent\":false,\"isCustomAgentBuilder\":false,\"isCustomAgentCreate\":false,\"isAgentResearchRequest\":false,\"useCustomAgentDraft\":false,\"enableMarkdownVNext\":false,\"enableSuggestedEditsTools\":true,\"enableAgentSkillsV2\":false,\"enableSkillsInCustomAgents\":false,\"updatePageStaleViewGuardEnabled\":false,\"enableUpdatePageOrderUpdates\":true,\"enableAgentSupportPropertyReorder\":true,\"disableTodos\":true,\"databaseAgentConfigMode\":false,\"isOnboardingAgent\":false,\"onboardingAgentVersion\":\"personal\",\"isMobile\":false,\"oracleThreadType\":\"onboarding\",\"agentSource\":\"onboarding\"}},{\"id\":\"{{gen-thread-ids.contextId}}\",\"type\":\"context\",\"value\":{\"timezone\":\"{{inputs.timezone}}\",\"userName\":\"{{inputs.workspaceName}}\",\"userId\":\"{{extract-creds.userId}}\",\"userEmail\":\"{{inputs.email}}\",\"spaceName\":\"{{inputs.workspaceName}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\",\"spaceViewId\":\"{{gen-space-view-ids.uuid}}\",\"currentDatetime\":\"{{gen-thread-ids.now}}\",\"surface\":\"post_onboarding_agent\"}},{\"id\":\"{{gen-thread-ids.titleId}}\",\"type\":\"title\",\"value\":\"Welcome to Notion\"},{\"id\":\"{{gen-thread-ids.msgId}}\",\"type\":\"user-injected\",\"actualMessage\":[[\"Start the onboarding conversation now. Send your first onboarding message. The user's locale is \\\"{{inputs.locale}}\\\". Respond in the user's language, not in English just because this prompt is in English.\"]],\"userId\":\"{{extract-creds.userId}}\",\"createdAt\":\"{{gen-thread-ids.now}}\"}],\"threadId\":\"{{gen-thread-ids.uuid}}\",\"threadParentPointer\":{\"table\":\"space\",\"id\":\"{{parse-space-id.spaceId}}\",\"spaceId\":\"{{parse-space-id.spaceId}}\"},\"createThread\":true,\"debugOverrides\":{\"emitAgentSearchExtractedResults\":true,\"cachedInferences\":{},\"annotationInferences\":{},\"emitInferences\":false},\"generateTitle\":true,\"saveAllThreadOperations\":true,\"setUnreadState\":true,\"createdSource\":\"post_onboarding_agent\",\"threadType\":\"workflow\",\"isPartialTranscript\":false,\"asPatchResponse\":true,\"patchResponseVersion\":2,\"isUserInAnySalesAssistedSpace\":false,\"isSpaceSalesAssisted\":false,\"supportsCustomAgentNudgeTranscriptStep\":true}",
       "credentials": "include",
       "timeoutMs": 15000
@@ -205,22 +244,25 @@
       "id": "log-agent-chat",
       "cmd": "log",
       "message": "Onboarding agent chat initiated (HAR Phase D)",
-      "data": { "threadId": "{{gen-thread-ids.uuid}}" }
+      "data": {
+        "threadId": "{{gen-thread-ids.uuid}}"
+      }
     },
-
     {
       "id": "gen-finish1-ids",
       "cmd": "eval",
       "function": "() => { return { requestId: crypto.randomUUID(), tx1Id: crypto.randomUUID(), tx2Id: crypto.randomUUID(), tx3Id: crypto.randomUUID(), ts: Date.now() }; }",
       "args": {}
     },
-
     {
       "id": "finish-onboarding-step1",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/saveTransactionsMain",
       "method": "POST",
-      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{parse-space-id.spaceId}}" },
+      "headers": {
+        "Content-Type": "application/json",
+        "x-notion-space-id": "{{parse-space-id.spaceId}}"
+      },
       "body": "{\"requestId\":\"{{gen-finish1-ids.requestId}}\",\"transactions\":[{\"id\":\"{{gen-finish1-ids.tx1Id}}\",\"debug\":{\"userAction\":\"contextualizedOnboardingActions.savePersonalOnboardingAgentConfig\",\"clientCommitTimeMs\":{{gen-finish1-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"user_settings\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"settings\"],\"command\":\"update\",\"args\":{\"post_personal_onboarding_agent_config\":{\"thread_id\":\"{{gen-thread-ids.uuid}}\",\"has_clicked_all_set\":false,\"space_id\":\"{{parse-space-id.spaceId}}\"}}}]},{\"id\":\"{{gen-finish1-ids.tx2Id}}\",\"debug\":{\"userAction\":\"checklistActions.completeChecklistStep\",\"clientCommitTimeMs\":{{gen-finish1-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"user_settings\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"settings\"],\"command\":\"update\",\"args\":{\"checklists\":{\"new_personal_user_home_checklist\":{\"completedSteps\":{\"personal-home-base\":{{gen-finish1-ids.ts}}}}}}}]},{\"id\":\"{{gen-finish1-ids.tx3Id}}\",\"debug\":{\"userAction\":\"contextualizedOnboardingActions.setAndTrackContextualizedOnboardingComplete\",\"clientCommitTimeMs\":{{gen-finish1-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"notion_user\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[],\"command\":\"update\",\"args\":{\"onboarding_completed\":true}}]}]}",
       "credentials": "include",
       "timeoutMs": 15000
@@ -230,13 +272,14 @@
       "cmd": "log",
       "message": "Onboarding step 1 complete (HAR Phase E step 12): saved agent chat thread_id + completed checklist + set onboarding_completed=true"
     },
-
     {
       "id": "fetch-user-settings",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/loadUserContent",
       "method": "POST",
-      "headers": { "Content-Type": "application/json" },
+      "headers": {
+        "Content-Type": "application/json"
+      },
       "body": "{}",
       "credentials": "include",
       "timeoutMs": 15000
@@ -245,22 +288,26 @@
       "id": "extract-current-settings",
       "cmd": "eval",
       "function": "(args) => { try { const d = JSON.parse(args.body); const us = d.user_settings || {}; const userId = args.userId; const usValue = us[userId] && us[userId].value ? us[userId].value : {}; let settings = usValue.value ? usValue.value.settings || {} : (usValue.settings || {}); settings = JSON.parse(JSON.stringify(settings)); settings.started_agent_chat_thread = true; if (!settings.new_user_home_first_shown_at) settings.new_user_home_first_shown_at = Date.now(); return { ok: true, settings }; } catch(e) { return { ok: false, error: e.message }; } }",
-      "args": { "body": "{{fetch-user-settings.body}}", "userId": "{{extract-creds.userId}}" }
+      "args": {
+        "body": "{{fetch-user-settings.body}}",
+        "userId": "{{extract-creds.userId}}"
+      }
     },
-
     {
       "id": "gen-finish2-ids",
       "cmd": "eval",
       "function": "() => { return { requestId: crypto.randomUUID(), tx1Id: crypto.randomUUID(), tx2Id: crypto.randomUUID(), tx3Id: crypto.randomUUID(), ts: Date.now() }; }",
       "args": {}
     },
-
     {
       "id": "finish-onboarding-step2",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/saveTransactionsMain",
       "method": "POST",
-      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{parse-space-id.spaceId}}" },
+      "headers": {
+        "Content-Type": "application/json",
+        "x-notion-space-id": "{{parse-space-id.spaceId}}"
+      },
       "body": "{\"requestId\":\"{{gen-finish2-ids.requestId}}\",\"transactions\":[{\"id\":\"{{gen-finish2-ids.tx1Id}}\",\"debug\":{\"userAction\":\"newUserHomeAnalytics.recordFirstShownAt\",\"clientCommitTimeMs\":{{gen-finish2-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"user_settings\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"settings\"],\"command\":\"update\",\"args\":{\"new_user_home_first_shown_at\":{{gen-finish2-ids.ts}}}}]},{\"id\":\"{{gen-finish2-ids.tx2Id}}\",\"debug\":{\"userAction\":\"AgentChatView.setStartedAgentChatThread\",\"clientCommitTimeMs\":{{gen-finish2-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"user_settings\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[],\"command\":\"update\",\"args\":{\"settings\":{{extract-current-settings.settings}}}}]},{\"id\":\"{{gen-finish2-ids.tx3Id}}\",\"debug\":{\"userAction\":\"newPersonalUserHome.setFinishedNewUserHomeExperience\",\"clientCommitTimeMs\":{{gen-finish2-ids.ts}}},\"operations\":[{\"pointer\":{\"table\":\"user_settings\",\"id\":\"{{extract-creds.userId}}\"},\"path\":[\"settings\"],\"command\":\"update\",\"args\":{\"finished_new_user_home_experience\":true}}]}]}",
       "credentials": "include",
       "timeoutMs": 15000
@@ -270,7 +317,6 @@
       "cmd": "log",
       "message": "Onboarding step 2 complete (HAR Phase E step 14): set started_agent_chat_thread=true + finished_new_user_home_experience=true"
     },
-
     {
       "id": "final-result",
       "cmd": "log",

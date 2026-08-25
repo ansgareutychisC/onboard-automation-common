@@ -1,9 +1,10 @@
 /**
- * Popup script — connection config + live diagnostics monitor.
+ * Popup script — connection config + email/storage config + live diagnostics monitor.
  *
- * The popup is just a monitor: it shows connection status, command counts,
- * and a live log feed from the background service worker. All the actual
- * work happens in background.js.
+ * The popup is just a monitor + launcher: it shows connection status, command
+ * counts, and a live log feed from the background service worker, plus the
+ * config panel (email API + Turso) and the macro replay launcher. All the
+ * actual work happens in background.js.
  */
 
 const serverUrlInput = document.getElementById('serverUrl');
@@ -61,6 +62,69 @@ async function loadPopupState() {
     return {};
   }
 }
+
+// ---------------------------------------------------------------------------
+// Email & Storage config panel — persisted to chrome.storage.local under the
+// same keys the macro inputs and lib/turso.js read:
+//   emailWorkerUrl   — full inbox API endpoint (ImprovMX /logs by default)
+//   emailWorkerToken — raw Basic pair ("api:sk_...") or a ready "Basic ..."/
+//                      "Bearer ..." header value
+//   tursoUrl/tursoToken — read directly by lib/turso.js (background)
+// Email config is merged into macro inputs at run time (per-run inputs win).
+// ---------------------------------------------------------------------------
+
+const CONFIG_FIELDS = ['emailWorkerUrl', 'emailWorkerToken', 'tursoUrl', 'tursoToken'];
+const configEls = {};
+for (const f of CONFIG_FIELDS) configEls[f] = document.getElementById(f);
+const configSavedEl = document.getElementById('configSaved');
+
+let emailConfig = { emailWorkerUrl: '', emailWorkerToken: '' };
+let saveConfigTimer = null;
+let configSavedTimer = null;
+
+async function loadEmailConfig() {
+  try {
+    const stored = await chrome.storage.local.get(CONFIG_FIELDS);
+    for (const f of CONFIG_FIELDS) {
+      if (configEls[f]) configEls[f].value = stored[f] || '';
+    }
+    emailConfig = {
+      emailWorkerUrl: stored.emailWorkerUrl || '',
+      emailWorkerToken: stored.emailWorkerToken || '',
+    };
+  } catch (e) {
+    // Storage unavailable — leave fields empty (non-fatal)
+  }
+}
+
+async function saveConfig() {
+  const state = {};
+  for (const f of CONFIG_FIELDS) state[f] = (configEls[f] ? configEls[f].value : '').trim();
+  try {
+    await chrome.storage.local.set(state);
+    emailConfig = {
+      emailWorkerUrl: state.emailWorkerUrl,
+      emailWorkerToken: state.emailWorkerToken,
+    };
+  } catch (e) {
+    // Storage unavailable — non-fatal
+  }
+  // Flash the "saved" indicator
+  configSavedEl.classList.add('show');
+  if (configSavedTimer) clearTimeout(configSavedTimer);
+  configSavedTimer = setTimeout(() => configSavedEl.classList.remove('show'), 1500);
+}
+
+function scheduleSaveConfig() {
+  if (saveConfigTimer) clearTimeout(saveConfigTimer);
+  saveConfigTimer = setTimeout(saveConfig, 500);  // 500ms debounce
+}
+
+for (const f of CONFIG_FIELDS) {
+  if (configEls[f]) configEls[f].addEventListener('input', scheduleSaveConfig);
+}
+
+const loadEmailConfigPromise = loadEmailConfig();
 
 // ---------------------------------------------------------------------------
 // Initial config load (server URL + autoConnect — separate from popupState
@@ -246,10 +310,11 @@ const macroResultArea = document.getElementById('macroResultArea');
 // We use chrome.runtime.getURL to fetch them.
 const presetCache = {};
 
-// Default inputs — empty by default. The user configures these via the
-// popup config panel (emailWorkerUrl, emailWorkerToken) or pastes them
-// into the inputs textarea per macro run. Each custom domain has its own
-// email worker, so we don't hardcode any URLs here.
+// Default inputs — the email API URL + token are intentionally EMPTY here:
+// they auto-fill from the Email & Storage config panel at preset-selection
+// time (so the user sees them) and again at run time (so empty values never
+// reach the macro). Each custom domain has its own email API, so nothing is
+// hardcoded.
 const DEFAULT_INPUTS = {
   email: '',
   workspaceName: 'My Workspace',
@@ -281,24 +346,40 @@ macroPresetSelect.addEventListener('change', async () => {
     }
   }
   macroJsonTextarea.value = JSON.stringify(presetCache[name], null, 2);
-  
+
+  // Make sure the email config is loaded before pre-filling inputs
+  await loadEmailConfigPromise;
+
   // Adjust default inputs based on the preset
-  if (name === 'create-api-key' || name === 'activate-trial') {
+  if (name === 'notion/create-api-key' || name === 'notion/activate-trial') {
     // These only need spaceId, not email worker stuff
     macroInputsTextarea.value = JSON.stringify({
       spaceId: 'YOUR_SPACE_ID_HERE',
-      ...(name === 'activate-trial' ? { captchaToken: 'P1_eyJ...', trialDays: 14 } : {}),
-      ...(name === 'create-api-key' ? { integrationName: 'automation-pat', expiration: '1_year' } : {}),
+      ...(name === 'notion/activate-trial' ? { captchaToken: 'P1_eyJ...', trialDays: 14 } : {}),
+      ...(name === 'notion/create-api-key' ? { integrationName: 'automation-pat', expiration: '1_year' } : {}),
     }, null, 2);
-  } else if (name === 'create-workspace') {
+  } else if (name === 'notion/create-workspace') {
     macroInputsTextarea.value = JSON.stringify({
       workspaceName: 'New Workspace',
       workspaceIcon: '🚀',
       planType: 'personal',
     }, null, 2);
+  } else if (name === '_shared/wait-for-verification-email') {
+    // The shared chunk only needs the email API fields
+    macroInputsTextarea.value = JSON.stringify({
+      email: '',
+      emailWorkerUrl: emailConfig.emailWorkerUrl || '',
+      emailWorkerToken: emailConfig.emailWorkerToken || '',
+    }, null, 2);
   } else {
-    // signup-onboard — use the full default inputs
-    macroInputsTextarea.value = JSON.stringify(DEFAULT_INPUTS, null, 2);
+    // notion/signup, notion/full-onboarding — email-flow presets. Pre-fill
+    // the email API fields from the config panel so the user sees (and can
+    // override) exactly what will be used.
+    macroInputsTextarea.value = JSON.stringify({
+      ...DEFAULT_INPUTS,
+      emailWorkerUrl: emailConfig.emailWorkerUrl || '',
+      emailWorkerToken: emailConfig.emailWorkerToken || '',
+    }, null, 2);
   }
 });
 
@@ -320,6 +401,15 @@ runMacroBtn.addEventListener('click', async () => {
   } catch (e) {
     alert('Invalid inputs JSON: ' + e.message);
     return;
+  }
+
+  // Merge the Email config panel into the inputs: config fills in only the
+  // keys the per-run inputs leave empty/missing. Per-run values always win,
+  // so the user can still override per run via the inputs textarea.
+  await loadEmailConfigPromise;
+  inputs = { ...inputs };
+  for (const k of ['emailWorkerUrl', 'emailWorkerToken']) {
+    if (!inputs[k] && emailConfig[k]) inputs[k] = emailConfig[k];
   }
 
   // Disable the run button + show progress

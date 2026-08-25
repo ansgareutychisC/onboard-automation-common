@@ -43,7 +43,7 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["sandbox.html", "sandbox.js", "macros/*.json"],
+      "resources": ["sandbox.html", "sandbox.js", "macros/*.json", "macros/**/*.json"],
       "matches": ["<all_urls>"]
     }
   ]

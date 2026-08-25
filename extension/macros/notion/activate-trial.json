@@ -1,5 +1,6 @@
 {
   "name": "activate-trial",
+  "service": "notion",
   "description": "Activate the 14-day business trial on a workspace. Requires an active Notion session AND an hCaptcha P1_... token (obtained manually from a real browser session: open Notion → Settings → Billing → Start free trial → devtools Network tab → copy the captchaToken from the updateSubscription request body). The token is short-lived (~2 min). Matches HAR Phase F step 18.",
   "inputs": {
     "spaceId": "YOUR_SPACE_ID_HERE",
@@ -11,14 +12,19 @@
       "id": "gen-ids",
       "cmd": "eval",
       "function": "(args) => { const trialEnd = new Date(Date.now() + (args.trialDays || 14) * 86400000).toISOString(); return { modalSessionId: crypto.randomUUID(), trialEnd }; }",
-      "args": { "trialDays": "{{inputs.trialDays}}" }
+      "args": {
+        "trialDays": "{{inputs.trialDays}}"
+      }
     },
     {
       "id": "activate-trial",
       "cmd": "fetch",
       "url": "https://app.notion.com/api/v3/updateSubscription",
       "method": "POST",
-      "headers": { "Content-Type": "application/json", "x-notion-space-id": "{{inputs.spaceId}}" },
+      "headers": {
+        "Content-Type": "application/json",
+        "x-notion-space-id": "{{inputs.spaceId}}"
+      },
       "body": "{\"captchaToken\":\"{{inputs.captchaToken}}\",\"spaceId\":\"{{inputs.spaceId}}\",\"desiredState\":{\"items\":[{\"quantity\":1,\"price\":{\"externalId\":\"business_monthly_usd_202505\",\"product\":\"business\",\"billingInterval\":\"month\",\"unitAmount\":{\"currencyCode\":\"USD\",\"amount\":2400},\"state\":\"current\"}}],\"trialEnd\":\"{{gen-ids.trialEnd}}\"},\"modalSessionId\":\"{{gen-ids.modalSessionId}}\",\"clientVersion\":\"23.13.20260811.2055\",\"trialData\":{\"id\":\"custom_agents_business_reverse_14d\",\"from\":\"new_custom_agents_sidebar\",\"autoConvert\":false},\"from\":\"new_custom_agents_sidebar\"}",
       "credentials": "include",
       "timeoutMs": 30000
@@ -27,7 +33,9 @@
       "id": "parse-result",
       "cmd": "eval",
       "function": "(args) => { try { const d = JSON.parse(args.body); if (d.subscriptionStatus === 'trialing') return { ok: true, status: d.subscriptionStatus, invoiceUrl: d.invoiceUrl || '' }; return { ok: false, status: d.subscriptionStatus || 'unknown', body: args.body.slice(0, 300) }; } catch(e) { return { ok: false, error: e.message }; } }",
-      "args": { "body": "{{activate-trial.body}}" }
+      "args": {
+        "body": "{{activate-trial.body}}"
+      }
     },
     {
       "id": "final-result",
