@@ -50,3 +50,6 @@ python-dev-daemon/bridge.db-journal
 # Backend session files (contain live credentials — never commit)
 backend/sessions/*
 !backend/sessions/example.json
+
+# E2E rotation state (runtime)
+backend/e2e_state.json

@@ -53,8 +53,9 @@ Empirically verified while driving the user's browser + direct API probes:
 | Mail was sent to… | Full body programmatically? | Where to read it |
 |---|---|---|
 | `admin@`, `support@`, `noreply@`, `billing@`, `security@` `@priv.email` | **YES** — dual-delivered | v3-mail API, `?address=admin@v3-mail.priv.email` (§4) — **but see the live-finding above: today the apex form is what matches chained mail** |
-| anything `@v3-mail.priv.email` | **YES** — native worker route | v3-mail API (§4) |
-| anything `@v4-mail.priv.email` | **YES** (v4 surface) | same v3-mail API — the v4 worker shares the shape |
+| anything `@v3-mail.priv.email` | **YES** — native worker route (catch-all) | v3-mail API (§4) |
+| `test@` or `admin@` `@v4-mail.priv.email` | **YES** (routed addresses) | v4-mail API (§4, v4 token) |
+| any OTHER address `@v4-mail.priv.email` | **NO** — v4 has NO catch-all route (live finding 2026-08-25: a Notion signup code to `e2e-*@v4-mail` never arrived; the v4 store only ever held mail for the two routed addresses). Add a CF Email Routing catch-all on the v4 zone to fix. | — |
 | a random address via the catch-all (`*@priv.email`) | **NO** — Hotmail only | ImprovMX logs (subject/sender/status only, §5); or add a named alias that chains (§6) |
 | ANY `@priv.email` address, delivery status only | metadata | ImprovMX logs API (§5) |
 

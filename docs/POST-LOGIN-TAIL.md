@@ -233,3 +233,70 @@ swapped after construction). Zenrows gotchas baked in:
 The chat transcript config (59 keys, drifts per deploy) lives in
 `backend/notion_chat_config.json`; refresh it with `--refresh-config`
 after capturing a new ground-truth chat request (recorder technique).
+
+## The ONE-SCRIPT E2E — `backend/notion_e2e.py` (2026-08-25, live-verified)
+
+The whole flow — extension signup to backend finish — in a single command.
+Assumes only: daemon running + extension connected.
+
+```
+python3 backend/notion_e2e.py                     # fresh email, 2 workspaces
+python3 backend/notion_e2e.py --workspaces 3      # N workspaces, each fully provisioned
+python3 backend/notion_e2e.py --email-domain v4   # force v3/v4/apex rotation step
+python3 backend/notion_e2e.py --no-signup --session backend/sessions/x.json --workspaces 3
+                                                  # idempotent re-run (converges to goal state)
+```
+
+What it does (per run):
+
+1. **Allocates a fresh email** rotating the three mail domains —
+   `v3-mail.priv.email` / `v4-mail.priv.email` (native worker routes, ANY
+   local part works, no alias setup) and the apex `priv.email` (creates a
+   fresh dual-delivering ImprovMX alias via the API — catch-all addresses
+   do NOT reach the worker, which is what looked like a "signup cooldown").
+   Rotation state: `backend/e2e_state.json`. No cooldown: every run is a
+   brand-new address + brand-new Notion account.
+2. **Preflight** — daemon health + extension connected.
+3. **Signup** — `macro.run notion/signup-rest` through the daemon WS
+   (pure REST auth on the user's residential IP; the code email is read
+   from the mail worker with the Bearer token inside the extension SW).
+4. **Creds over WS** — tokenV2 (JWT) / userId / deviceId / clientVersion
+   from the macro result — the daemon WS IS the extension→backend handoff
+   (Turso is optional and currently deferred).
+5. **Tail** — resume → workspace → onboarding → trial → apikey → chat.
+6. **Workspaces 2..N** — each: create + activate → its own biz trial →
+   its own API key → its own chat (distinct prompts; replies read from
+   the `runInferenceTranscript` API stream, never the DOM).
+7. **Verdict + report** — PASS only if every workspace has an active biz
+   trial, a verified API key, and a completed chat. Everything (email,
+   JWT, device id, workspaces, per-space trials, per-space API keys,
+   chats with replies) is persisted atomically to the session file.
+
+Live-verified single-pass results (fresh account, 2026-08-25): signup
+19/19 macro steps in 18s over WS; 3 workspaces; 3 verified `ntn_` keys;
+chats replied "4"/"4"/"6" with `last_turn_outcome: completed`; multiple
+simultaneous biz trials on ONE account confirmed.
+
+### Live gotchas learned while hardening it
+
+- **The trial IP-gate error is WRAPPED**: str(e) says only
+  "Something went wrong. (400)" (`generic_error`) while the payload
+  carries `name: UserValidationError`, `debugMessage: "Trial activation
+  is not allowed."` — `_looks_ip_blocked()` must inspect the payload or
+  the Zenrows fallback never fires. The gate is also **probabilistic**
+  per-request (one direct attempt did succeed).
+- **Zenrows RESP001** ("Could not get content… premium proxies") is a
+  Zenrows-side transient failure that surfaces as NotionValidationError
+  "[HTTP 400] validation error" — `ZenrowsSession` now detects
+  zenrows-error bodies and retries with backoff (4 attempts).
+- **Notion 429 "Rate limited"** hits `updateSubscription` when several
+  trials are activated in quick succession on one account — `routed()`
+  now waits 20s/40s and retries, and the E2E paces 15s between
+  workspace trial activations.
+- **`finish_onboarding_screens` MUST stream**: it passes
+  `collect_initial_messages=False` (fire-and-forget) explicitly, so the
+  load_ref patch must FORCE `collect_initial_messages=True` — with
+  `setdefault` the fire-and-forget path `.json()`s the NDJSON body and
+  crashes with JSONDecodeError "Extra data" (this silently broke
+  onboarding on every fresh account; symptom: trial then 400s).
+

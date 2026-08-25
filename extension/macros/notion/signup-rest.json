@@ -190,6 +190,11 @@
       "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
       "args": {
         "cookies": "{{get-cookies.cookies}}"
+      },
+      "persistTokens": {
+        "userId": "notion_user_id",
+        "tokenV2": "token_v2",
+        "deviceId": "notion_device_id"
       }
     },
     {

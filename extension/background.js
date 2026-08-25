@@ -2429,6 +2429,7 @@ async function handleMacroRun(msg) {
         }
       }
     }).catch(err => console.error('[turso] recordMacroRun error:', err));
+    captureStepTokens(macro, ctx);
     // Push to popup if open
     try { chrome.runtime.sendMessage({ type: 'macro-complete', result: summary }); } catch (e) { /* popup not open */ }
     // Only forward via WS if the macro was triggered by the backend.
@@ -2476,6 +2477,7 @@ async function handleMacroRun(msg) {
         }
       }
     }).catch(err2 => console.error('[turso] recordMacroRun error (failure path):', err2));
+    captureStepTokens(macro, ctx);
     // Push to popup if open
     try { chrome.runtime.sendMessage({ type: 'macro-complete', result: summary }); } catch (e) { /* popup not open */ }
     if (!isPopup) {
@@ -2743,12 +2745,15 @@ function summarizeResult(result) {
   const s = {};
   for (const k of Object.keys(result)) {
     const v = result[k];
-    if (typeof v === 'string' && v.length > 200) {
-      s[k] = v.slice(0, 200) + '...(' + v.length + ' chars)';
+    // Caps kept generous: recordStepResult() caps at 65KB anyway, and the
+    // old 200/300-char caps TRUNCATED token_v2 (~740 chars) — breaking the
+    // Turso creds-persistence path (backend could not resume sessions).
+    if (typeof v === 'string' && v.length > 16000) {
+      s[k] = v.slice(0, 16000) + '...(' + v.length + ' chars)';
     } else if (typeof v === 'object' && v !== null) {
       const json = JSON.stringify(v);
-      if (json.length > 300) {
-        s[k] = json.slice(0, 300) + '...';
+      if (json.length > 32000) {
+        s[k] = json.slice(0, 32000) + '...';
       } else {
         s[k] = v;
       }
@@ -2757,6 +2762,31 @@ function summarizeResult(result) {
     }
   }
   return s;
+}
+
+// Persist tokens declared via step.persistTokens ({resultKey: tokenType})
+// into Turso's captured_tokens — FULL values, never truncated. This is the
+// extension→backend handoff: the backend later resumes the session straight
+// from Turso (no daemon, no browser). No-op when Turso isn't configured or
+// the macro declares no persistTokens.
+function captureStepTokens(macro, ctx) {
+  for (const step of (macro.steps || [])) {
+    const map = step.persistTokens;
+    if (!map) continue;
+    const res = ctx.results[step.id];
+    if (!res) continue;
+    for (const [key, tokenType] of Object.entries(map)) {
+      const val = res[key];
+      if (val !== undefined && val !== null && String(val).length > 0) {
+        captureToken({
+          service: macro.service || 'unknown',
+          email: (ctx.inputs && ctx.inputs.email) || '',
+          tokenType: String(tokenType),
+          tokenValue: String(val),
+        }).catch(err => console.error('[turso] captureToken error:', err));
+      }
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
