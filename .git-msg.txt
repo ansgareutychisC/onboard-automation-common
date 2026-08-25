@@ -1,34 +1,45 @@
-v0.9.4: storage.clear command — the missing half of logout (live-verified)
+v0.9.5: direct v3-mail Bearer API for all mail reads — no mail tab, no admin session
 
-User-reported symptom: after login, Notion redirects to the last-used page
-of the PREVIOUS account. Root cause (measured live in the user's browser):
-cookies.remove cleared 16/16 cookies fine, but 122 localStorage keys
-survived — including lastVisitedRoute, current-user-id (old account),
-sidebar state, BlockFrecency keyed by old user ids. Plus sessionStorage
-(5), IndexedDB (3 DBs — Notion's TransactionStore can hold queued offline
-transactions from a previous session), and 2 service-worker caches.
+The user handed over deploy-secrets.json (QUERY_API_TOKENs) and asked for the
+proper API query. Every email read now goes DIRECTLY from the extension
+service worker to https://v3-mail.priv.email with a Bearer token — the
+mail-tab + admin-cookie + tab-focus workarounds are gone.
 
-- NEW storage.clear command: wipes localStorage + sessionStorage +
-  IndexedDB + Cache API for an origin. Closes other same-origin tabs first
-  (releases IDB handles, stops in-memory state being written back), opens
-  a temp tab on the origin when none exists. All storage surfaces
-  individually toggleable.
-- cookies.remove hardened: sweeps the whole registrable domain (not just
-  the url's subdomain — host-only cookies on www.notion.com were missed)
-  and removes per (name, domain, path) so same-name duplicates across
-  domain variants each die.
-- All four signup macros (signup, signup-rest, full-onboarding, self-test)
-  now run cookies.remove → storage.clear before opening the page.
-- todoist reference finding: its flow needs no clearing because it uses a
-  fresh requests.Session() per signup — clean by construction. The
-  extension inherits the user's browser state, so clearing must be
-  explicit. Lesson recorded in SKILL.md §1.17.
-- Updated SKILL-consumer.md to the user's improved revision + live
-  findings addendum: chained mail is stored under the APEX address form
-  (admin@priv.email), not the v3-mail form the doc claims — query both
-  until the coming query-API unifies them.
-- Dry-run harness: storage.clear mocked; 9/9 macros, 128/128 steps PASS.
+Extension:
+- signup-rest.json rewritten: mail-baseline (sinceId = max row id, guards
+  against stale codes on re-runs) + poll via include_body=true (one request
+  per poll covers list AND body); email-auth normalizes the Bearer header;
+  fatal-with-clear-error on 401/403; all eval steps pinned to the signup tab.
+- resolveTemplate is now TWO-PASS (bounded): input VALUES may contain
+  {{inputs.*}} templates — the chunk's emailWorkerUrl is
+  https://v3-mail.priv.email/emails?address={{inputs.email}}&include_body=true
+- Shared chunk + all notion macros + self-test switched to the v3-mail
+  provider with body-first extraction (subject layers remain the fallback);
+  notion macros keep their notion-tuned extractionJs (sender filter +
+  escape-hatch fatal message).
+- DEFAULT_CONFIG ships the v3-mail URL + Bearer token (zero-config, same
+  committed-with-blessing policy as the ImprovMX key); DEFAULT email is
+  admin@priv.email (named alias — catch-all addresses do NOT dual-deliver
+  into the worker).
+- FIXED v0.9.3 regression: handleMacroRun's finally still iterated the
+  removed state.debuggerStickyTabs — every completed macro since v0.9.3 was
+  reported as failed ("Uncaught: ... not iterable"). Cleanup now releases
+  the 'macro' debugger holder via debuggerDetach.
 
-Live verification performed in the user's browser: closed other notion
-tabs, ran the clear — localStorage 122→0, lastVisitedRoute gone, all 3
-IndexedDB deleted, both caches deleted.
+Live findings (all encoded in tests + docs):
+- Notion login codes are MIXED CASE ("bfDSXo") vs digits-only signup codes
+  ("493701") — extraction matches /^[A-Za-z0-9]{4,10}$/ on the FIRST LINE of
+  text_body (found live; the uppercase-only regex missed it).
+- HTML-only emails return text_body: null with include_body=true (Notion's
+  "new device" notifications) — extraction tolerates.
+- Cloudflare bot-blocks plain python urllib (403) on the worker host.
+
+Tests (all green):
+- dry-run: 9/9 macros, lint clean — new v3-mail mock (Bearer check, nested-
+  template address assertion, decoy stale code exercising sinceId/sinceMs)
+- NEW tests/test_mail_api_live.js: 16 checks vs the LIVE worker (auth,
+  shapes, negative controls, extraction, v4 probe)
+- toy E2E + headless E2E: ALL PASS (mock is now v3-mail-shaped: Bearer auth,
+  body-only codes, SRS from_address, newest-first order)
+- LIVE E2E in the user's browser via the daemon: signup-rest 18/18 steps,
+  twice — code extracted from body via direct Bearer API, token_v2 captured

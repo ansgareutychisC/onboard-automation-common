@@ -14,7 +14,7 @@ That's it. The extension runs **standalone** — no backend needed.
 
 The **Email & Storage Config** panel (popup, left column) ships pre-filled:
 
-- **Email API URL**: the `priv.email` ImprovMX inbox endpoint
+- **Email API URL**: the `priv.email` v3-mail worker inbox endpoint (default, full bodies)
 - **Email API token**: `api:sk_...` (the priv.email key)
 
 So the email presets work immediately. Optional:
@@ -82,6 +82,6 @@ curl -X POST http://127.0.0.1:3000/api/command \
   the email arrived but its code is in the body, which the inbox API can't
   read. Get the code from Hotmail (Junk folder) and run `notion/submit-code`,
   or re-run with `manualCode` set.
-- **No code found** — check the email actually arrived (ImprovMX logs API),
+- **No code found** — check the email actually arrived (v3-mail worker API),
   and that the email input matches the alias you used.
 - Full docs: README.md, docs/MACROS.md, docs/EXTENSION-VS-CHROME-RD.md.

@@ -1,7 +1,7 @@
 {
-  "$comment": "Onboard Automation Bridge — config reference. The extension stores these in chrome.storage.local; the popup's 'Email & Storage Config' panel is the UI. The ImprovMX defaults below SHIP pre-filled (the popup falls back to them when a key was never saved), so a fresh install runs the email presets with zero configuration. This file is documentation — the extension does not read it. For automation, set the same keys via chrome.storage.local.",
-  "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
-  "emailWorkerToken": "api:sk_691ff26633c94b0d80523433afe3a369",
+  "$comment": "Onboard Automation Bridge — config reference. The extension stores these in chrome.storage.local; the popup's 'Email & Storage Config' panel is the UI. The v3-mail defaults below SHIP pre-filled (the popup falls back to them when a key was never saved), so a fresh install runs the email presets with zero configuration. The v3-mail worker API (https://v3-mail.priv.email) returns FULL EMAIL BODIES via Bearer auth — use a NAMED priv.email alias (admin@ by default) so mail dual-delivers into the worker. For catch-all addresses (metadata/subject-only) swap in the ImprovMX logs endpoint + Basic pair instead. This file is documentation — the extension does not read it. For automation, set the same keys via chrome.storage.local.",
+  "emailWorkerUrl": "https://v3-mail.priv.email/emails?address={{inputs.email}}&limit=10&include_body=true",
+  "emailWorkerToken": "Bearer a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf",
   "tursoUrl": "",
   "tursoToken": "",
   "$serverUrl": "(optional) ws://127.0.0.1:3000 for the local dev daemon, or wss://<your-preview-host>/ in the sandbox — set via the popup's Server Connection box, not here",

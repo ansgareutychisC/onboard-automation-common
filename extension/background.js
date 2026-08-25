@@ -2483,13 +2483,17 @@ async function handleMacroRun(msg) {
     }
   } finally {
     // Run cleanup — ALWAYS, success / failure / cancellation alike:
-    //   1. Detach every debugger we kept attached for this run (clears the
-    //      "being debugged" infobar — the user's "exit that mode").
+    //   1. Release this run's 'macro' debugger holder on every tab it touched
+    //      (refcounted: the real chrome.debugger.detach happens only when no
+    //      other holder — xhr.intercept, adhoc eval — still needs the session).
     //   2. Reset the run-control flags so the next macro can start.
-    for (const tid of state.debuggerStickyTabs) {
-      try { await chrome.debugger.detach({ tabId: tid }); } catch (e) { /* already detached */ }
+    // v0.9.3 regression fixed here: this block still iterated the REMOVED
+    // state.debuggerStickyTabs, throwing "not iterable" AFTER the summary was
+    // sent — the uncaught-handler then reported every completed macro as
+    // failed. Caught by the toy-signup E2E.
+    for (const tid of [...state.debuggerHolders.keys()]) {
+      try { await debuggerDetach(tid, 'macro'); } catch (e) { /* already detached */ }
     }
-    state.debuggerStickyTabs.clear();
     state.macroRunning = false;
     state.macroCancelRequested = false;
   }
@@ -2661,7 +2665,20 @@ async function executeRetryBlock(step, ctx) {
 // caller can detect missing values).
 function resolveTemplate(str, ctx) {
   if (typeof str !== 'string') return str;
+  const first = resolveTemplateOnce(str, ctx);
+  // Second pass: allows INPUT VALUES to themselves contain templates — e.g.
+  // the shared email chunk's emailWorkerUrl input is
+  //   "https://v3-mail.priv.email/emails?address={{inputs.email}}&limit=10&include_body=true"
+  // which references the per-run email input. Bounded to ONE extra pass so a
+  // value that legitimately contains "{{...}}" text (e.g. an email body quoting
+  // template syntax) cannot recurse — and unresolvable paths stay literal.
+  if (typeof first === 'string' && first.includes('{{')) {
+    return resolveTemplateOnce(first, ctx);
+  }
+  return first;
+}
 
+function resolveTemplateOnce(str, ctx) {
   // Fast path: entire string is a single template
   const single = /^\s*\{\{([^}]+)\}\}\s*$/.exec(str);
   if (single) {

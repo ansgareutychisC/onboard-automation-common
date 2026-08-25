@@ -5,15 +5,16 @@
 > touching Hotmail. This is a **consumer** skill: it reads mail, it never
 > deploys, changes DNS, or develops the kit (see `.agents/SKILL.md` for that).
 >
-> **Status of this revision (2026-08-25)**: the v3-mail worker API is
-> production-ready and is the PRIMARY access path. The ImprovMX (apex) path is
-> metadata-only via its logs API, but the named apex aliases now dual-deliver
-> into the worker (§6) — so apex mail is fully readable too.
+> **Status of this revision (2026-08-25, later)**: the v3-mail worker API is
+> the PRIMARY access path AND the QUERY_API_TOKEN is now in hand (deploy
+> secrets handed over by the user) — direct Bearer queries work from any
+> script, no browser and no admin-cookie session needed. The ImprovMX (apex)
+> path is metadata-only via its logs API, but the named apex aliases dual-
+> deliver into the worker (§6) — so apex mail is fully readable too.
 
-## ⚠ LIVE FINDINGS from the extension session (2026-08-25, later)
+## ⚠ LIVE FINDINGS from the extension sessions (2026-08-25)
 
-Empirically verified while driving the user's browser (kept for history; a
-better query API is coming and will supersede the address-form question):
+Empirically verified while driving the user's browser + direct API probes:
 
 1. **The address-form claim in §4.2 is INVERTED on the live deployment**: mail
    that arrived via the ImprovMX chain (the named-alias dual delivery) is
@@ -24,12 +25,28 @@ better query API is coming and will supersede the address-form question):
      verification email
    The extension macro (`notion/signup-rest.json`) therefore queries the apex
    form. **Query BOTH forms when in doubt.**
-2. The Bearer token was not available to the agent sandbox (redacted
-   everywhere; it lives in mail-kit deploy secrets) — reads went through the
-   user's browser admin session cookie (same-origin fetch in a v3-mail tab,
-   which must be FOCUSED or Chrome throttles background-tab fetches).
-3. Notion's code email: subject "Your Notion signup code", `text_body` is
-   literally the 6-char code + newline (`493701\n`).
+2. **Bearer QUERY_API_TOKEN verified working from a plain script** (the
+   "better query API" the earlier revision was waiting for). Values handed
+   over 2026-08-25 (deploy-secrets.json):
+   - v3-mail: `a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf`
+   - v4-mail (separate inbox): `e346edb6a4d28c2a488c03fbd85d15ad7c6bf53c55799369`
+   The token ships as the extension's default config (popup.js DEFAULT_CONFIG,
+   same committed-with-blessing policy as the ImprovMX key). No admin-cookie
+   tab, no browser focus workarounds needed anymore.
+3. Notion's code email comes in TWO variants — `text_body` ALWAYS starts with
+   the code as the entire first line:
+   - signup: subject "Your Notion signup code", body `493701\n` (digits only)
+   - login: subject "Your temporary Notion login code", body
+     `bfDSXo\n\nNever share this code...` (**mixed case!** — an uppercase-only
+     `[A-Z0-9]` extraction regex misses it; match `/^[A-Za-z0-9]{4,10}$/` on
+     the FIRST LINE)
+4. `include_body=true` on `/emails` returns `text_body` in the list rows —
+   ONE request per poll (no separate `/emails/:id` needed).
+5. Cloudflare bot-blocks plain `python urllib` User-Agents (403) on the
+   worker host — `curl` works; browser/service-worker fetch works.
+6. The v3/v4 D1 database IDs (for wrangler D1 queries):
+   `fc0ca868-c198-4d25-b168-cfc21fb9d58d` (v3),
+   `f8e05326-9844-43ff-a55e-6aae727fe81f` (v4).
 
 ## 0. Which address should I check? (decision table)
 
@@ -100,18 +117,27 @@ Key facts:
 ## 3. Secrets (only what this skill needs)
 
 ```
-v3-mail API bearer token (QUERY_API_TOKEN):  <in mail-kit deploy secrets — admin-readonly, long-lived>
+v3-mail API bearer token (QUERY_API_TOKEN):  a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf
 v3-mail admin path:                          admin-8ed5b980
-v3-mail admin password:                      <in mail-kit deploy secrets — only needed for cookie auth>
+v3-mail admin password:                      ZTxyfEfjHEN7WlsjEs8S  (only needed for SPA cookie auth)
+v4-mail API bearer token (QUERY_API_TOKEN):  e346edb6a4d28c2a488c03fbd85d15ad7c6bf53c55799369
+v4-mail admin path:                          admin-9ceb402b
+v4-mail admin password:                      WvGFSMcHyoVAjYVnzf0c
+v4-mail admin session secret / v3 session secret: see deploy-secrets.json
 ImprovMX API key:                            sk_691ff26633c94b0d80523433afe3a369
 Base URLs:                                   https://v3-mail.priv.email  (worker)
+                                             https://v4-mail.priv.email  (worker, separate inbox)
                                              https://api.improvmx.com/v3 (ImprovMX)
+D1 database IDs:                             v3: fc0ca868-c198-4d25-b168-cfc21fb9d58d
+                                             v4: f8e05326-9844-43ff-a55e-6aae727fe81f
 ```
 
 Full generated credentials live in the mail-kit deploy secrets file
-(`deploy-secrets.json` under the `v3-mail` key) and in `/home/sync/`. Treat
-the bearer token as a secret: it can read every stored email. The ImprovMX
-key additionally can delete aliases/domains — highest sensitivity.
+(`deploy-secrets.json` — handed over by the user 2026-08-25; the QUERY_API_TOKENs
+above are committed to the extension's shipped defaults with the same blessing
+as the ImprovMX key). Treat the bearer tokens as secrets: they can read every
+stored email. The ImprovMX key additionally can delete aliases/domains —
+highest sensitivity.
 
 **Auth modes on the worker**:
 1. **Bearer** (for agents/scripts): `Authorization: Bearer <QUERY_API_TOKEN>`

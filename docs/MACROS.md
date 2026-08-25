@@ -144,7 +144,9 @@ For polling (e.g., waiting for a verification email), use the `retry` block:
 
 Note: `timeoutMs` / `intervalMs` / `condition` are read literally by the runner
 (they are NOT template-resolved) — keep them concrete values. The interval of
-10s respects ImprovMX's ~10 req/min limit on the `/logs` endpoint.
+10s (the v3-mail worker has no rate limiter configured; 10s keeps poll
+load trivial either way — ImprovMX's ~10 req/min limit only applies to its
+subject-only `/logs` fallback).
 
 The `condition` is a JS expression evaluated against `{ result, results, inputs }` where:
 - `result` = the result of the last sub-step
@@ -182,7 +184,8 @@ The extension bundles presets under `extension/macros/`, organized by service:
 | `_shared/wait-for-verification-email` | The email chunk standalone — tests the email infra | Email API config |
 | `_shared/self-test` | FULL signup vs the local toy site (16 steps, ~1s) | `node tests/toy-signup-site/server.js` |
 
-The email API config ships pre-filled (priv.email / ImprovMX defaults) — the
+The email API config ships pre-filled (priv.email v3-mail worker defaults —
+Bearer token, full email bodies) — the
 `wait-for-verification-email` and notion email presets run with zero
 configuration on a fresh install. `extension/config.example.json` documents
 every config key.
@@ -218,13 +221,16 @@ chunk of record is `wait-for-verification-email`:
   ABORTS immediately — distinguish "not yet" (keep polling) from "never"
   (this API cannot read the code). Non-code emails (digests, welcomes)
   never trigger fatal.
-- **Reality check (2026-08-24 live finding)**: Notion's code email is
-  "Your Notion signup code" with the code in the BODY. ImprovMX `/logs`
-  exposes subjects only — so for Notion today the flow is: signup runs,
-  detects the email, fails fast with instructions; you grab the code from
-  Hotmail (Junk folder) and either re-run with `manualCode` or run
-  `notion/submit-code`. The long-term fix is an email source with body
-  access (e.g. a Cloudflare Email Routing worker storing bodies in Turso).
+- **RESOLVED (v0.9.5, 2026-08-25)**: the v3-mail worker API is the DEFAULT
+  provider — `include_body=true` returns full email bodies, and Notion's
+  `text_body` starts with the code on its own first line (signup codes are
+  digits, login codes are MIXED CASE — extraction matches
+  `/^[A-Za-z0-9]{4,10}$/` on line 1). The old 2026-08-24 reality (subject-only
+  ImprovMX, manual code from Hotmail Junk) only applies to catch-all
+  addresses now — use a NAMED alias (admin@priv.email, the shipped default)
+  and the flow is fully automatic. `manualCode` + `notion/submit-code`
+  remain as escape hatches. The mail fetch runs in the extension service
+  worker with the Bearer token — no mail tab, no admin session.
 - When a service's email format changes, edit that service macro's
   `extractionJs` input default (e.g. `macros/notion/signup.json`) — one file,
   no extension code changes, no lockstep updates.
@@ -273,7 +279,8 @@ NODE_PATH=$(npm root -g) node tests/test_extension_headless.js
    - Verify the result shows an `ntn_*` token
 
 2. **Then `_shared/wait-for-verification-email`** (email infra only):
-   - Fill the Email & Storage config panel (ImprovMX URL + `api:sk_...` token)
+   - Fill the Email & Storage config panel (v3-mail URL + Bearer token —
+   both ship pre-filled)
    - Select the chunk preset, set inputs `{"email": "you@priv.email"}`
    - Run — should extract the code from the latest matching email
 

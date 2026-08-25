@@ -1,19 +1,14 @@
 {
   "name": "signup-rest",
   "service": "notion",
-  "description": "PURE REST Notion signup — zero clicks, zero form automation. Replays the web client's own auth endpoints: getLoginOptions → sendTemporaryPassword → (code read from the v3-mail worker inbox) → loginWithEmail → session cookies captured. Email must be a NAMED priv.email alias (admin@/support@/noreply@/billing@/security@) so the code email dual-delivers into the v3-mail worker where this macro can read the body. The Notion-Client-Version header is read live from the signup page (it is REQUIRED — requests without it are rejected). Verified end-to-end 2026-08-25 (see docs/NOTION-REST-AUTH.md).",
+  "description": "PURE REST Notion signup — zero clicks, zero form automation. Replays the web client's own auth endpoints: getLoginOptions → sendTemporaryPassword → (code read DIRECTLY from the v3-mail worker inbox API with a Bearer token — no mail tab, no admin-cookie session) → loginWithEmail → session cookies captured. Email must be a NAMED priv.email alias (admin@/support@/noreply@/billing@/security@) so the code email dual-delivers into the v3-mail worker where this macro reads the body. The Notion-Client-Version header is read live from the signup page (it is REQUIRED — requests without it are rejected). Verified end-to-end 2026-08-25 (see docs/NOTION-REST-AUTH.md).",
   "inputs": {
     "email": "admin@priv.email",
-    "mailUrl": "https://v3-mail.priv.email/admin-8ed5b980",
+    "emailWorkerUrl": "https://v3-mail.priv.email/emails?address={{inputs.email}}&limit=10&include_body=true",
+    "emailWorkerToken": "Bearer a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf",
     "redirectURL": "/p/3c7e9d22c27d805f8768dc3399e67455"
   },
   "steps": [
-    {
-      "id": "gen-ids",
-      "cmd": "eval",
-      "function": "() => { return { deviceId: crypto.randomUUID(), ts: Date.now() }; }",
-      "args": {}
-    },
     {
       "id": "clear-cookies",
       "cmd": "cookies.remove",
@@ -31,6 +26,13 @@
       "active": true
     },
     {
+      "id": "gen-ids",
+      "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
+      "function": "() => { return { deviceId: crypto.randomUUID(), ts: Date.now() }; }",
+      "args": {}
+    },
+    {
       "id": "get-version",
       "cmd": "form.eval",
       "tabId": "{{open-signup.tabId}}",
@@ -38,17 +40,34 @@
       "args": []
     },
     {
-      "id": "open-mail-tab",
-      "cmd": "tabs.open",
-      "url": "{{inputs.mailUrl}}",
-      "active": true
+      "id": "email-auth",
+      "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
+      "function": "(args) => { const t = (args.token || '').trim(); if (!t) return { ok: false, error: 'emailWorkerToken input is empty — set it in the popup config panel (Email API token) or the macro inputs' }; if (/^(basic|bearer)\\s+/i.test(t)) return { header: t }; try { return { header: 'Basic ' + btoa(t) }; } catch (e) { return { ok: false, error: 'cannot build Authorization header (non-Latin1 token?): ' + e.message }; } }",
+      "args": {
+        "token": "{{inputs.emailWorkerToken}}"
+      }
     },
     {
       "id": "mail-baseline",
-      "cmd": "form.eval",
-      "tabId": "{{open-mail-tab.tabId}}",
-      "function": "return fetch('/emails?address=' + encodeURIComponent('{{inputs.email}}') + '&limit=1', { credentials: 'include' }).then(r => r.json()).then(d => ({ sinceId: ((d.results || [])[0] || {}).id || 0 }));",
-      "args": []
+      "cmd": "fetch",
+      "url": "{{inputs.emailWorkerUrl}}",
+      "method": "GET",
+      "headers": {
+        "Authorization": "{{email-auth.header}}"
+      },
+      "credentials": "omit",
+      "timeoutMs": 15000
+    },
+    {
+      "id": "parse-baseline",
+      "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
+      "function": "(args) => { try { const status = Number(args.status) || 0; if (status === 401 || status === 403) return { ok: false, error: 'mail API unauthorized (HTTP ' + status + ') — check the emailWorkerToken input (must be \"Bearer <QUERY_API_TOKEN>\")' }; const d = JSON.parse(args.body); const rows = d.results || []; let sinceId = 0; for (const r of rows) { const id = Number(r.id) || 0; if (id > sinceId) sinceId = id; } return { sinceId: sinceId, count: rows.length }; } catch (e) { return { ok: false, error: 'mail baseline parse failed: ' + e.message }; } }",
+      "args": {
+        "body": "{{mail-baseline.body}}",
+        "status": "{{mail-baseline.status}}"
+      }
     },
     {
       "id": "get-login-options",
@@ -67,6 +86,7 @@
     {
       "id": "parse-login-options",
       "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
       "function": "(args) => { try { const d = JSON.parse(args.body); const t = d.loginOptionsToken || ''; if (!t) return { ok: false, error: 'no loginOptionsToken in getLoginOptions response', body: (args.body || '').slice(0, 200) }; return { loginOptionsToken: t }; } catch (e) { return { ok: false, error: e.message }; } }",
       "args": {
         "body": "{{get-login-options.body}}"
@@ -89,6 +109,7 @@
     {
       "id": "parse-state",
       "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
       "function": "(args) => { try { const d = JSON.parse(args.body); const s = d.csrfState || ''; if (!s) return { ok: false, error: 'no csrfState in sendTemporaryPassword response (email may be rate-limited — wait and retry)', body: (args.body || '').slice(0, 200) }; return { state: s }; } catch (e) { return { ok: false, error: e.message }; } }",
       "args": {
         "body": "{{send-code.body}}"
@@ -103,12 +124,24 @@
       "steps": [
         {
           "id": "poll-mail",
-          "cmd": "form.eval",
-          "tabId": "{{open-mail-tab.tabId}}",
-          "function": "(args) => {\n  // Poll the v3-mail worker inbox for the newest code email, then fetch its\n  // body. Runs inside the v3-mail tab (same-origin, admin session cookie).\n  const sinceId = Number(args.sinceId) || 0;\n  return fetch('/emails?address=' + encodeURIComponent(args.email) + '&limit=3', { credentials: 'include' })\n    .then(r => r.json())\n    .then(d => {\n      const rows = (d.results || []).filter(x => x.id > sinceId && /code/i.test(x.subject || ''));\n      if (!rows.length) return { code: null, reason: 'no new code email yet' };\n      const row = rows[0];\n      return fetch('/emails/' + row.id, { credentials: 'include' })\n        .then(r => r.json())\n        .then(full => {\n          const text = (full.text_body || '').trim();\n          const m = text.match(/[A-Z0-9]{4,10}/) || (full.subject || '').match(/([A-Z0-9]{4,10})/);\n          if (!m) return { code: null, reason: 'no code in body or subject', subject: full.subject };\n          return { code: m[1], subject: full.subject, emailId: row.id, received: row.received_at };\n        });\n    })\n    .catch(e => ({ code: null, error: String(e) }));\n}",
+          "cmd": "fetch",
+          "url": "{{inputs.emailWorkerUrl}}",
+          "method": "GET",
+          "headers": {
+            "Authorization": "{{email-auth.header}}"
+          },
+          "credentials": "omit",
+          "timeoutMs": 15000
+        },
+        {
+          "id": "extract-code",
+          "cmd": "eval",
+          "tabId": "{{open-signup.tabId}}",
+          "function": "(args) => {\n  // Parse the v3-mail worker /emails list (include_body=true) and extract\n  // the Notion verification code. Runs in the signup tab via chrome.debugger\n  // — but the mail request itself went out from the service worker with the\n  // Bearer token, so no mail tab and no admin session cookie are involved.\n  try {\n    const status = Number(args.status) || 0;\n    if (status === 401 || status === 403) {\n      return { code: null, fatal: true, error: 'mail API unauthorized (HTTP ' + status + ') — check the emailWorkerToken input (must be \"Bearer <QUERY_API_TOKEN>\")' };\n    }\n    const d = JSON.parse(args.body);\n    const rows = d.results || [];\n    const sinceId = Number(args.sinceId) || 0;\n    // Notion-specific row filter: newer than the baseline id, subject looks\n    // like a code email, AND the sender/subject mentions Notion.\n    const CODEISH = /(code|verify|verification|login|log[- ]?in|passcode|confirm|signup|sign[- ]?up|otp|one[- ]?time|security)/i;\n    let best = null;\n    for (const r of rows) {\n      const id = Number(r.id) || 0;\n      if (sinceId && id <= sinceId) continue;\n      const subject = r.subject || '';\n      const from = r.from_header || '';\n      if (!CODEISH.test(subject)) continue;\n      if (!/notion/i.test(from + ' ' + subject)) continue;\n      const ts = Date.parse(r.received_at || '') || 0;\n      if (!best || ts > best.ts) best = { id: id, ts: ts, subject: subject, from: from, text: (r.text_body || '').trim(), received: r.received_at };\n    }\n    if (!best) return { code: null, reason: rows.length ? 'no new Notion code email yet' : 'no emails yet', rowCount: rows.length };\n    const firstLine = (best.text.split(/\\n/)[0] || '').trim(); let m = /^[A-Za-z0-9]{4,10}$/.test(firstLine) ? [firstLine, firstLine] : null; if (!m) m = best.text.match(/\\b(?=\\w*\\d)(?=[^\\s]*[A-Za-z])[A-Za-z0-9]{4,10}\\b/) || best.text.match(/\\b[A-Z0-9]{4,10}\\b/); if (!m) m = best.subject.match(/\\b([A-Za-z0-9]{4,10})\\b/);\n    if (!m) return { code: null, fatal: true, emailId: best.id, subject: best.subject.slice(0, 80), error: 'Notion code email arrived but no code found in body or subject' };\n    return { code: m[1], source: best.text ? 'body' : 'subject', subject: best.subject.slice(0, 100), emailId: best.id, from: best.from.slice(0, 100), received: best.received };\n  } catch (e) {\n    return { code: null, error: String(e) };\n  }\n}",
           "args": {
-            "email": "{{inputs.email}}",
-            "sinceId": "{{mail-baseline.sinceId}}"
+            "body": "{{poll-mail.body}}",
+            "status": "{{poll-mail.status}}",
+            "sinceId": "{{parse-baseline.sinceId}}"
           }
         }
       ]
@@ -118,7 +151,8 @@
       "cmd": "log",
       "message": "Got verification code",
       "data": {
-        "code": "{{get-verification-code.result.code}}"
+        "code": "{{get-verification-code.result.code}}",
+        "emailId": "{{get-verification-code.result.emailId}}"
       }
     },
     {
@@ -138,6 +172,7 @@
     {
       "id": "parse-login",
       "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
       "function": "(args) => { try { const d = JSON.parse(args.body); if (d.error) return { ok: false, error: 'loginWithEmail failed: ' + JSON.stringify(d).slice(0, 200) }; return { isNewSignup: !!d.isNewSignup, userId: d.userId || '' }; } catch (e) { return { ok: false, error: e.message }; } }",
       "args": {
         "body": "{{login.body}}"
@@ -151,6 +186,7 @@
     {
       "id": "extract-creds",
       "cmd": "eval",
+      "tabId": "{{open-signup.tabId}}",
       "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
       "args": {
         "cookies": "{{get-cookies.cookies}}"
@@ -159,7 +195,7 @@
     {
       "id": "final-result",
       "cmd": "log",
-      "message": "🎉 REST signup complete — zero clicks",
+      "message": "🎉 REST signup complete — zero clicks, no mail tab",
       "data": {
         "userId": "{{extract-creds.userId}}",
         "notionUserId": "{{parse-login.userId}}",

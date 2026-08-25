@@ -38,9 +38,17 @@ const HAR_FILES = [
 
 const IMPROVMX_MOCK_URL = 'https://api.improvmx.com/v3/domains/priv.email/logs?take=20';
 const IMPROVMX_MOCK_TOKEN = 'api:mock-improvmx-key';
+// v3-mail worker mock — mirrors the real deployment's Bearer auth + response
+// shape (.agents/SKILL-consumer.md §4). The URL matches the macros' shipped
+// default (v3-mail.priv.email) and deliberately contains the nested
+// {{inputs.email}} template so the two-pass template resolution is exercised.
+const V3MAIL_MOCK_TOKEN = 'Bearer mock-v3-mail-token';
 
 // Test inputs (override the macros' default inputs).
 const TEST_INPUTS = {
+  // The shared chunk stays on the ImprovMX mock with a SUBJECT-code email —
+  // proves the chunk is still provider-agnostic and the subject-extraction
+  // fallback layers still work (catch-all addresses have no body access).
   'wait-for-verification-email': {
     email: 'test-signup@priv.email',
     emailWorkerUrl: IMPROVMX_MOCK_URL,
@@ -49,20 +57,21 @@ const TEST_INPUTS = {
   'self-test': {
     email: 'test-signup@priv.email',
     baseUrl: 'http://127.0.0.1:8898',
-    emailWorkerUrl: 'http://127.0.0.1:8898/v3/domains/priv.email/logs?take=20',
-    emailWorkerToken: IMPROVMX_MOCK_TOKEN,
+    // the toy server's mock v3-mail API (127.0.0.1:8898/emails) — the URL
+    // below matches its nested-template shape so two-pass resolution + the
+    // Bearer check + body extraction are all exercised locally
+    emailWorkerUrl: 'http://127.0.0.1:8898/emails?address={{inputs.email}}&limit=10&include_body=true',
+    emailWorkerToken: V3MAIL_MOCK_TOKEN,
   },
   'signup': {
     email: 'test-signup@priv.email',
-    emailWorkerUrl: IMPROVMX_MOCK_URL,
-    emailWorkerToken: IMPROVMX_MOCK_TOKEN,
+    emailWorkerToken: V3MAIL_MOCK_TOKEN,
   },
   'full-onboarding': {
     email: 'test-signup@priv.email',
     workspaceName: 'Test Space',
     workspaceIcon: '🏠',
-    emailWorkerUrl: IMPROVMX_MOCK_URL,
-    emailWorkerToken: IMPROVMX_MOCK_TOKEN,
+    emailWorkerToken: V3MAIL_MOCK_TOKEN,
     locale: 'en-US',
     timezone: 'America/Los_Angeles',
   },
@@ -86,7 +95,10 @@ const TEST_INPUTS = {
   },
   'signup-rest': {
     email: 'admin@priv.email',
-    mailUrl: 'https://v3-mail.priv.email/admin-8ed5b980',
+    // emailWorkerUrl deliberately NOT overridden — the macro's shipped default
+    // (https://v3-mail.priv.email/emails?address={{inputs.email}}...) is used,
+    // so the nested-template resolution + the v3-mail mock are both exercised.
+    emailWorkerToken: V3MAIL_MOCK_TOKEN,
     redirectURL: '/p/mock',
   },
 };
@@ -145,7 +157,16 @@ function mockLoadUserContentBody(userId) {
 
 function resolveTemplate(str, ctx) {
   if (typeof str !== 'string') return str;
+  const first = resolveTemplateOnce(str, ctx);
+  // Two-pass — mirrors background.js: input VALUES may contain templates
+  // (e.g. the v3-mail emailWorkerUrl references {{inputs.email}}).
+  if (typeof first === 'string' && first.includes('{{')) {
+    return resolveTemplateOnce(first, ctx);
+  }
+  return first;
+}
 
+function resolveTemplateOnce(str, ctx) {
   const single = /^\s*\{\{([^}]+)\}\}\s*$/.exec(str);
   if (single) {
     const val = lookupTemplatePath(single[1].trim(), ctx);
@@ -557,6 +578,96 @@ async function runEvalFunctionAsync(functionStr, args) {
 }
 
 // -----------------------------------------------------------------------------
+// v3-mail worker mock — mirrors the REAL deployment (Bearer auth, /emails
+// response shape, newest-first order). 1st call: the current inbox (baseline);
+// the code email "arrives" on call 2+ so the retry loop is exercised.
+// Verifies: Bearer Authorization header, the address= query param resolved
+// from the NESTED {{inputs.email}} template, and include_body handling.
+// -----------------------------------------------------------------------------
+
+function mockV3Mail(step, mockState, macroName, ctx) {
+  mockState.emailWorkerCalls = (mockState.emailWorkerCalls || 0) + 1;
+
+  // Auth check — must be exactly the Bearer header from emailWorkerToken.
+  const got = (step.headers && step.headers.Authorization) || '';
+  if (got !== V3MAIL_MOCK_TOKEN) {
+    return {
+      ok: false,
+      error: `v3-mail mock: Authorization header mismatch (got ${JSON.stringify(got)}, expected ${JSON.stringify(V3MAIL_MOCK_TOKEN)})`,
+    };
+  }
+
+  // URL shape check — address= MUST be present and equal the macro's email
+  // input. This is the assertion that proves two-pass template resolution
+  // worked (the URL came from an input value containing {{inputs.email}}).
+  let u;
+  try {
+    u = new URL(step.url);
+  } catch (e) {
+    return { ok: false, error: `v3-mail mock: unparseable URL ${step.url}` };
+  }
+  if (u.pathname !== '/emails') {
+    return { ok: false, error: `v3-mail mock: unexpected path ${u.pathname}` };
+  }
+  const address = (u.searchParams.get('address') || '').toLowerCase();
+  const expectedAddr = ((ctx && ctx.inputs && ctx.inputs.email) || '').toLowerCase();
+  if (!address) {
+    return { ok: false, error: 'v3-mail mock: missing address= query param (nested template not resolved?)' };
+  }
+  if (expectedAddr && address !== expectedAddr) {
+    return { ok: false, error: `v3-mail mock: address mismatch (got ${address}, macro email input ${expectedAddr})` };
+  }
+  const includeBody = u.searchParams.get('include_body') === 'true';
+
+  const mkRow = (id, subject, bodyOrNull, ageMs) => {
+    const row = {
+      id,
+      message_id: `<mock-${id}@notion.so>`,
+      from_address: `bounces-imx+${'x'.repeat(40)}@bounces.improvmx.net`,  // SRS-rewritten envelope
+      from_header: 'Notion Team <notify@updates.notion.so>',                // the REAL sender
+      to_address: address,
+      subject,
+      received_at: new Date(Date.now() - (ageMs || 0)).toISOString(),
+      raw_size: 8258,
+      has_attachments: 0,
+      is_read: 0,
+      is_starred: 0,
+      deleted_at: null,
+    };
+    if (bodyOrNull !== null && includeBody) row.text_body = bodyOrNull;
+    return row;
+  };
+
+  // Call 1 = baseline (or first poll): only OLD mail — a decoy code email
+  // from a previous run (older id AND 10-min-old timestamp — exercises BOTH
+  // the sinceId guard in signup-rest and the sinceMs guard in the chunk).
+  if (mockState.emailWorkerCalls < 2) {
+    return {
+      ok: true, status: 200, statusText: 'OK',
+      body: JSON.stringify({
+        results: [mkRow(1, 'Your Notion signup code', 'OLDC0DE\n', 600000)],
+        nextCursor: null, count: 1, include_body: includeBody,
+      }),
+      finalUrl: step.url, headers: {},
+    };
+  }
+
+  // Call 2+: the NEW code email (id 5, fresh) + the old decoy still present.
+  // Newest first — the real worker's order.
+  return {
+    ok: true, status: 200, statusText: 'OK',
+    body: JSON.stringify({
+      results: [
+        mkRow(5, 'Your Notion signup code', MOCK_VERIFICATION_CODE + '\n', 0),
+        mkRow(1, 'Your Notion signup code', 'OLDC0DE\n', 600000),
+      ],
+      nextCursor: null, count: 2, include_body: includeBody,
+    }),
+    finalUrl: step.url, headers: {},
+  };
+}
+
+// -----------------------------------------------------------------------------
 // ImprovMX mock — 1st poll: empty logs; 2nd poll: the verification email.
 // Verifies the Authorization header built by the email-auth eval step.
 // -----------------------------------------------------------------------------
@@ -709,6 +820,19 @@ async function runFetchStep(step, ctx, harDb, mockState) {
     apiPath = u.pathname;
   } catch (e) {
     return { ok: false, error: `invalid URL: ${url}` };
+  }
+
+  // Special case: v3-mail worker inbox API (the macros' default provider —
+  // real https://v3-mail.priv.email or the toy mock at 127.0.0.1:8898/emails).
+  // MUST be checked before the ImprovMX case: the toy URL contains neither
+  // improvmx.com nor priv.email, and the real v3-mail URL contains priv.email
+  // but not improvmx.com — dispatch on the /emails path + Bearer auth instead.
+  {
+    let mu = null;
+    try { mu = new URL(url); } catch (e) { /* fall through */ }
+    if (mu && mu.pathname === '/emails') {
+      return mockV3Mail(step, mockState, ctx.__macroName, ctx);
+    }
   }
 
   // Special case: ImprovMX-style inbox API (real ImprovMX for the shared

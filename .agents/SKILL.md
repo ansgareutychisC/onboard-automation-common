@@ -96,6 +96,37 @@ this. Consequences (all implemented in v0.9.2):
   it died because Notion blocked that domain, not because the pattern was
   wrong). ImprovMX simply cannot provide bodies.
 
+**THE 2026-08-25 LIVE FINDINGS (v3-mail Bearer path — DELIVERED in v0.9.5,
+all verified live in the user's browser):**
+- The long-term fix above LANDED: the v3-mail worker API
+  (https://v3-mail.priv.email) with Bearer auth returns FULL BODIES via
+  `include_body=true`. It is now the DEFAULT provider for the shared chunk
+  AND all notion macros (the ImprovMX logs endpoint remains a documented
+  fallback for catch-all addresses — subject-only). Requires a NAMED
+  priv.email alias (admin@ by default) — the dual-delivery into the worker
+  only happens for the five named aliases.
+- Notion's `text_body` ALWAYS starts with the code as the entire FIRST LINE.
+  TWO variants: signup code = digits only (`493701\n`), login code (account
+  already exists) = **mixed case** (`bfDSXo\n\nNever share this code...`).
+  An uppercase-only `[A-Z0-9]` regex misses the login variant — match
+  `/^[A-Za-z0-9]{4,10}$/` on the first line. (Found by a live run — the mock
+  tests all used uppercase codes and missed it.)
+- `include_body=true` on `/emails` returns `text_body` in the LIST rows — one
+  request per poll, no follow-up `/emails/:id`.
+- The mail fetches run in the EXTENSION SERVICE WORKER (`fetch` cmd,
+  `credentials: 'omit'`, Bearer header) — no mail tab, no admin-cookie
+  session, no background-tab-throttling workarounds. host_permissions make
+  the SW fetch CORS-free.
+- Chained mail is stored under the APEX address form
+  (`address=admin@priv.email`), NOT the v3-mail form — the shipped default
+  URL queries the apex form (see SKILL-consumer.md §LIVE FINDINGS).
+- `signup-rest` takes a `sinceId` BASELINE (max row id) before
+  `sendTemporaryPassword`, so a re-run never submits a stale code from the
+  previous run's email (the chunk's `sinceMs` filter + 120s grace window
+  covers the form-based macros the same way).
+- Cloudflare bot-blocks plain `python urllib` (403) on the worker host —
+  `curl` and browser/SW fetches are fine.
+
 ### 1.3 Email worker URL is per-domain — never hardcode `privatimail.com`
 
 The user moved off `privatimail.com` (blocked by Notion after too many
@@ -348,6 +379,35 @@ total)" and "18 pytest tests pass" — but the test scripts
 **never committed**. The claim is unverifiable. Later commits did add
 `tests/test_macro_dryrun.js` (1016 lines) and `tests/test_backend_units.py`
 (1007 lines) — verify they actually exist before relying on them.
+
+### 1.19 Template resolution is TWO-PASS — input values may contain templates
+
+Since v0.9.5, `resolveTemplate` runs a bounded second pass when the first
+pass still contains `{{`. Why: the shared email chunk's `emailWorkerUrl`
+input is `https://v3-mail.priv.email/emails?address={{inputs.email}}&...` —
+the per-run email flows into the URL through an INPUT VALUE, not a step
+field. Rules:
+- Exactly ONE extra pass (no recursion) — a value that legitimately contains
+  `{{...}}` text (e.g. an email body quoting template syntax) can't loop.
+- Unresolvable paths stay literal in both passes.
+- The dry-run harness (tests/test_macro_dryrun.js) ports the same logic —
+  keep them in sync when touching either.
+
+### 1.20 v0.9.3 regression: macro completion threw in its finally block
+
+The v0.9.3 debuggerHolders refactor removed `state.debuggerStickyTabs` but
+left `for (const tid of state.debuggerStickyTabs)` in handleMacroRun's
+`finally`. The run itself SUCCEEDED (summary already sent), then the finally
+threw "not iterable", and the popup's uncaught-handler overwrote the result
+with a failure. Every macro since v0.9.3 reported "failed" at completion
+even when all steps passed. Caught by the toy-signup E2E (which is why the
+E2E must assert step results, not just the summary). Fixed in v0.9.5 —
+cleanup now releases the 'macro' holder via `debuggerDetach` on every tab
+in `state.debuggerHolders`.
+
+**Lesson**: a `finally` block that throws masks the real result. Test
+completion paths, not just happy paths — and grep for removed state keys
+after every refactor.
 
 ## 2. Architecture (current state, post-Phase-1-start)
 

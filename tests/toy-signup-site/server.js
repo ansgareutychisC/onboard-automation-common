@@ -10,10 +10,16 @@
 //   2. POST /api/signup  {email}    — "sends" a verification email and swaps
 //                                     to the code view (SPA transition, same
 //                                     as Notion — no full page navigation)
-//   3. GET  /v3/domains/priv.email/logs?take=N
-//                                  — mock ImprovMX inbox API (same response
-//                                     SHAPE as the real one). Requires a
-//                                     Basic Authorization header (any value).
+//   3. GET  /emails?address=<addr>&limit=N&include_body=true
+//                                  — mock v3-mail worker inbox API (same
+//                                     response SHAPE as the real one, see
+//                                     .agents/SKILL-consumer.md §4). Requires
+//                                     a Bearer Authorization header (any
+//                                     token). The code email carries the code
+//                                     in text_body ONLY — the subject says
+//                                     "...code" without the code itself, exactly
+//                                     like Notion's real emails — so the
+//                                     body-extraction path is what gets tested.
 //   4. POST /api/verify {email, code} — validates the code; on success the
 //                                     page sets a `toy_session` cookie and
 //                                     pushState's to /welcome (SPA, so the
@@ -32,7 +38,8 @@ const PORT = 8898;
 const state = {
   startedAt: Date.now(),
   signups: 0,          // completed signups
-  inbox: [],           // ImprovMX-log-shaped entries
+  emailSeq: 0,         // monotonic email id (v3-mail uses numeric D1 row ids)
+  inbox: [],           // v3-mail-worker-shaped entries
   authRejects: 0,
 };
 
@@ -170,28 +177,32 @@ const server = http.createServer(async (req, res) => {
     }
     const code = genCode();
     state.inbox.push({
-      created: Date.now(),
-      subject: `Your login code is ${code}`,
-      sender: { email: 'noreply@toy-signup.local', name: 'Toy Signup' },
-      recipient: { email, name: null },
-      forward: { email: 'nobody@toy-signup.local', name: null },
-      events: [{ status: 'DELIVERED', code: 250, message: '2.6.0 Queued' }],
-      messageId: `<${crypto.randomUUID()}@toy-signup.local>`,
-      id: crypto.randomUUID(),
-      _code: code,  // server-side only — NOT exposed by /logs (shape-faithful)
+      id: ++state.emailSeq,
+      message_id: `<${crypto.randomUUID()}@toy-signup.local>`,
+      // shape-faithful to chained mail: SRS-rewritten envelope sender...
+      from_address: `bounces-imx+${crypto.randomBytes(8).toString('hex')}@bounces.improvmx.net`,
+      // ...while the REAL sender lives in from_header (SKILL-consumer.md §4.5)
+      from_header: 'Toy Signup <noreply@toy-signup.local>',
+      to_address: email,
+      subject: 'Your toy signup code',  // code NOT in the subject — like Notion
+      received_at: new Date().toISOString(),
+      raw_size: 8544,
+      text_body: code + '\n',           // the code IS the body — like Notion
     });
     // keep the last 50
     if (state.inbox.length > 50) state.inbox.splice(0, state.inbox.length - 50);
-    console.log(`[toy] signup for ${email} — code mailed (subject)`);
+    console.log(`[toy] signup for ${email} — code mailed (body-only, v3-mail shape)`);
     json(res, 200, { ok: true, message: 'verification code sent' });
     return;
   }
 
   if (u.pathname === '/api/verify' && req.method === 'POST') {
     const { email, code } = await readBody(req);
-    const entry = [...state.inbox].reverse().find((l) => l.recipient.email === email);
+    const entry = [...state.inbox].reverse().find((e) =>
+      (e.to_address || '').toLowerCase() === String(email || '').toLowerCase());
     if (!entry) { json(res, 400, { ok: false, error: 'no signup found for this email' }); return; }
-    if (String(code).trim().toUpperCase() !== entry._code) {
+    // the code lives in text_body (v3-mail shape — like Notion's real emails)
+    if (String(code).trim().toUpperCase() !== (entry.text_body || '').trim().toUpperCase()) {
       json(res, 400, { ok: false, error: 'wrong code' });
       return;
     }
@@ -202,18 +213,46 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Mock ImprovMX /logs — same response shape as the real API. Requires Basic auth
-  // (any credentials) so the email-auth step of the shared chunk is exercised.
-  if (u.pathname === '/v3/domains/priv.email/logs') {
+  // Mock v3-mail worker GET /emails — same response shape as the real API
+  // (SKILL-consumer.md §4.2). Requires Bearer auth (any token) so the
+  // email-auth step of the shared chunk is exercised. `address` is REQUIRED
+  // and matches to_address exactly (the real worker 400s without it).
+  if (u.pathname === '/emails' && req.method === 'GET') {
     const auth = req.headers['authorization'] || '';
-    if (!auth.startsWith('Basic ')) {
+    if (!auth.startsWith('Bearer ')) {
       state.authRejects++;
-      json(res, 401, { code: 401, error: 'Authentication required' });
+      json(res, 401, { error: 'Unauthorized' });
       return;
     }
-    const take = Math.min(parseInt(u.searchParams.get('take') || '50', 10) || 50, 100);
-    const logs = state.inbox.slice(-take).map(({ _code, ...rest }) => rest);
-    json(res, 200, { success: true, logs });
+    const address = (u.searchParams.get('address') || '').toLowerCase();
+    if (!address) {
+      json(res, 400, { error: 'address query param required' });
+      return;
+    }
+    const includeBody = u.searchParams.get('include_body') === 'true';
+    const limit = Math.min(parseInt(u.searchParams.get('limit') || '50', 10) || 50, 500);
+    const rows = state.inbox
+      .filter(e => (e.to_address || '').toLowerCase() === address)
+      .slice(-limit)
+      .reverse();  // newest first — the real worker's order
+    const results = rows.map(e => {
+      const base = {
+        id: e.id,
+        message_id: e.message_id,
+        from_address: e.from_address,
+        from_header: e.from_header,
+        to_address: e.to_address,
+        subject: e.subject,
+        received_at: e.received_at,
+        raw_size: e.raw_size,
+        has_attachments: 0,
+        is_read: 0,
+        is_starred: 0,
+      };
+      if (includeBody) base.text_body = e.text_body;
+      return base;
+    });
+    json(res, 200, { results, nextCursor: null, count: results.length, include_body: includeBody });
     return;
   }
 
@@ -222,5 +261,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`toy-signup-site listening on http://127.0.0.1:${PORT}`);
-  console.log(`mock ImprovMX logs API at http://127.0.0.1:${PORT}/v3/domains/priv.email/logs`);
+  console.log(`mock v3-mail worker API at http://127.0.0.1:${PORT}/emails?address=...`);
 });

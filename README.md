@@ -46,7 +46,7 @@ onboard-automation-common/
 │   │   └── turso.js                    # Turso (libSQL) HTTP client — no-op when unconfigured
 │   └── macros/
 │       ├── _shared/
-│       │   ├── wait-for-verification-email.json   # reusable email chunk (ImprovMX-based)
+│       │   ├── wait-for-verification-email.json   # reusable email chunk (v3-mail Bearer API)
 │       │   └── self-test.json          # full signup vs the local toy site (zero-risk E2E)
 │       └── notion/
 │           ├── signup.json             # signup + email verify + session capture (17 steps)
@@ -59,6 +59,7 @@ onboard-automation-common/
 ├── tests/
 │   ├── test_macro_dryrun.js            # dry-run all macros vs HAR-captured responses
 │   ├── test_email_extraction_live.js   # extractionJs vs the live ImprovMX API
+│   ├── test_mail_api_live.js          # v3-mail Bearer API vs the live worker (16 checks)
 │   ├── test_extension_headless.js      # E2E in headless Chromium (email chunk + Turso)
 │   ├── test_toy_signup_e2e.js          # FULL signup E2E vs the toy site + daemon remote control
 │   ├── toy-signup-site/
@@ -70,7 +71,7 @@ onboard-automation-common/
 │   └── EXTENSION-VS-CHROME-RD.md       # extension vs raw CDP analysis
 └── .agents/
     ├── SKILL.md                        # meta-agent knowledge (read this first)
-    └── SKILL-consumer.md               # reading *@priv.email via ImprovMX API
+    └── SKILL-consumer.md               # reading *@priv.email programmatically (v3-mail primary)
 ```
 
 ## Three Connection Modes
@@ -90,7 +91,7 @@ onboard-automation-common/
 1. Open `chrome://extensions`, enable Developer mode.
 2. Click "Load unpacked", select the `extension/` directory.
 3. Click the extension icon — the **Email & Storage Config** panel is already
-   pre-filled with the priv.email / ImprovMX defaults (URL + token ship in
+   pre-filled with the priv.email v3-mail defaults (URL + Bearer token ship in
    the build), so you can run the email presets immediately. Optional:
    Turso URL/token for run-history persistence.
 
@@ -106,7 +107,7 @@ node tests/toy-signup-site/server.js    # local toy signup site + mock inbox
 ```
 
 The toy site mimics the Notion signup flow's shape (same selectors, same SPA
-transitions) and exposes an ImprovMX-shaped inbox API — the self-test macro
+transitions) and exposes a v3-mail-shaped inbox API (Bearer auth, body codes) — the self-test macro
 completes a full signup + email verification + session capture in ~1s.
 
 ### Run the Test Suite

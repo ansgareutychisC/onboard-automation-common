@@ -67,22 +67,28 @@ async function loadPopupState() {
 // ---------------------------------------------------------------------------
 // Email & Storage config panel — persisted to chrome.storage.local under the
 // same keys the macro inputs and lib/turso.js read:
-//   emailWorkerUrl   — full inbox API endpoint (ImprovMX /logs by default)
-//   emailWorkerToken — raw Basic pair ("api:sk_...") or a ready "Basic ..."/
-//                      "Bearer ..." header value
+//   emailWorkerUrl   — full inbox API endpoint. Default: the v3-mail worker
+//                      API (https://v3-mail.priv.email) — full EMAIL BODIES via
+//                      Bearer auth, works for the named priv.email aliases
+//                      (admin/support/noreply/billing/security@ — they
+//                      dual-deliver into the worker). The URL may contain
+//                      {{inputs.email}} — resolved per run.
+//   emailWorkerToken — "Bearer <QUERY_API_TOKEN>" for v3-mail, or the raw
+//                      ImprovMX pair "api:sk_..." (subject-only metadata,
+//                      works for ANY @priv.email address incl. catch-all)
 //   tursoUrl/tursoToken — read directly by lib/turso.js (background)
 // Email config is merged into macro inputs at run time (per-run inputs win).
 //
 // SHIPPED DEFAULTS (friction reduction): when a key has never been saved, the
-// fields pre-fill with the priv.email / ImprovMX defaults below so a fresh
+// fields pre-fill with the priv.email / v3-mail defaults below so a fresh
 // install can run the email presets immediately. Clearing a field and saving
 // stores '' — but on next load an empty value falls back to the default again
 // (deliberate: empty config is almost always a mistake for these two keys).
 // ---------------------------------------------------------------------------
 
 const DEFAULT_CONFIG = {
-  emailWorkerUrl: 'https://api.improvmx.com/v3/domains/priv.email/logs?take=20',
-  emailWorkerToken: 'api:sk_691ff26633c94b0d80523433afe3a369',  // priv.email ImprovMX key (committed with user's blessing — see .agents/SKILL-consumer.md)
+  emailWorkerUrl: 'https://v3-mail.priv.email/emails?address={{inputs.email}}&limit=10&include_body=true',
+  emailWorkerToken: 'Bearer a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf',  // priv.email v3-mail QUERY_API_TOKEN (committed with user's blessing, same policy as the ImprovMX key — see .agents/SKILL-consumer.md)
 };
 
 const CONFIG_FIELDS = ['emailWorkerUrl', 'emailWorkerToken', 'tursoUrl', 'tursoToken'];
@@ -343,7 +349,7 @@ const presetCache = {};
 // manualCode: escape hatch for services whose code email doesn't expose the
 // code in the subject line (Notion does this) — set it to skip polling.
 const DEFAULT_INPUTS = {
-  email: 'onboard@priv.email',
+  email: 'admin@priv.email',  // NAMED alias — dual-delivers into the v3-mail worker (catch-all addresses do NOT)
   workspaceName: 'My Workspace',
   workspaceIcon: '🏠',
   manualCode: '',
@@ -399,14 +405,16 @@ macroPresetSelect.addEventListener('change', async () => {
     }, null, 2);
   } else if (name === '_shared/self-test') {
     // The self-test preset targets the LOCAL toy signup site — it must NOT
-    // inherit the real ImprovMX config (the code email arrives at the toy
-    // server's mock inbox, not at priv.email). Its defaults are self-contained.
+    // inherit the real v3-mail config (the code email arrives at the toy
+    // server's mock inbox, not at priv.email). Its defaults are self-contained
+    // and mimic the v3-mail worker API shape (Bearer auth, /emails list with
+    // include_body) so the same code path is exercised.
     const m = presetCache[name];
     macroInputsTextarea.value = JSON.stringify({
-      email: (m.inputs && m.inputs.email) || 'onboard@priv.email',
+      email: (m.inputs && m.inputs.email) || 'admin@priv.email',
       baseUrl: (m.inputs && m.inputs.baseUrl) || 'http://127.0.0.1:8898',
-      emailWorkerUrl: (m.inputs && m.inputs.emailWorkerUrl) || '',
-      emailWorkerToken: (m.inputs && m.inputs.emailWorkerToken) || 'api:toy-local',
+      emailWorkerUrl: (m.inputs && m.inputs.emailWorkerUrl) || 'http://127.0.0.1:8898/emails?address={{inputs.email}}&limit=10&include_body=true',
+      emailWorkerToken: (m.inputs && m.inputs.emailWorkerToken) || 'Bearer toy-token',
     }, null, 2);
   } else if (name === '_shared/wait-for-verification-email') {
     // The shared chunk only needs the email API fields

@@ -29,8 +29,8 @@ const DAEMON_PORT = 3010;
 const EXT_PATH = path.join(REPO, 'extension');
 const PROFILE_DIR = path.join(REPO, '.tmp-chrome-profile-toy');
 
-const SHIPPED_DEFAULT_URL = 'https://api.improvmx.com/v3/domains/priv.email/logs?take=20';
-const SHIPPED_DEFAULT_TOKEN = 'api:sk_691ff26633c94b0d80523433afe3a369';
+const SHIPPED_DEFAULT_URL = 'https://v3-mail.priv.email/emails?address={{inputs.email}}&limit=10&include_body=true';
+const SHIPPED_DEFAULT_TOKEN = 'Bearer a2df50bf1d1310903061cdd569b6a20a62717998dcfe52bf';
 
 let failures = 0;
 function check(name, cond, detail) {
@@ -114,8 +114,8 @@ async function main() {
     await wait(600);  // let loadEmailConfig populate the fields
     const cfgUrl = await popup.inputValue('#emailWorkerUrl');
     const cfgToken = await popup.inputValue('#emailWorkerToken');
-    check('config panel pre-filled with ImprovMX URL default', cfgUrl === SHIPPED_DEFAULT_URL, `got ${cfgUrl}`);
-    check('config panel pre-filled with priv.email token default', cfgToken === SHIPPED_DEFAULT_TOKEN, `got ${cfgToken}`);
+    check('config panel pre-filled with v3-mail worker URL default', cfgUrl === SHIPPED_DEFAULT_URL, `got ${cfgUrl}`);
+    check('config panel pre-filled with v3-mail Bearer token default', cfgToken === SHIPPED_DEFAULT_TOKEN, `got ${cfgToken}`);
 
     // ------------------------------------------------------------------
     console.log('\n--- 2. Full signup self-test (real DOM + email chunk) ---');
@@ -125,8 +125,8 @@ async function main() {
       return v && v.includes('"self-test"');
     }, undefined, { timeout: 10000 });
     const stInputs = await popup.evaluate(() => JSON.parse(document.getElementById('macroInputs').value || '{}'));
-    check('self-test preset inputs are self-contained (toy URL, not real ImprovMX)',
-      stInputs.emailWorkerUrl === `http://127.0.0.1:${TOY_PORT}/v3/domains/priv.email/logs?take=20`
+    check('self-test preset inputs are self-contained (toy mock of the v3-mail API, not the real worker)',
+      stInputs.emailWorkerUrl === `http://127.0.0.1:${TOY_PORT}/emails?address={{inputs.email}}&limit=10&include_body=true`
       && stInputs.baseUrl === `http://127.0.0.1:${TOY_PORT}`,
       `inputs=${JSON.stringify(stInputs)}`);
 

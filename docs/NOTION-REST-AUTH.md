@@ -37,22 +37,32 @@ Notion-Client-Version: <live value — read document.documentElement
 ```
 → `{ "csrfState": "v02:temp_password:…" }` + the code email is sent.
 
-### 3. Read the code from v3-mail
+### 3. Read the code from v3-mail (direct Bearer API — no mail tab)
 
 Send to a **named** priv.email alias (admin@ / support@ / noreply@ /
 billing@ / security@) — those dual-deliver into the v3-mail worker where the
 body is readable. **The chained mail is stored under the APEX form**
-(`address=admin@priv.email`), NOT the v3-mail form — the skill doc's claim
-is wrong for this deployment. `text_body` of Notion's code email IS the code
-(6-char alphanumeric, e.g. `493701\n`).
+(`address=admin@priv.email`), NOT the v3-mail form. `text_body` of Notion's
+code email ALWAYS starts with the code as the entire first line — TWO
+variants verified live:
+- signup code: subject "Your Notion signup code", body `493701\n` (digits)
+- login code (account already exists): subject "Your temporary Notion login
+  code", body `bfDSXo\n\nNever share this code...` — **mixed case**, so an
+  uppercase-only `[A-Z0-9]` regex misses it; match `/^[A-Za-z0-9]{4,10}$/`
+  on the first line.
 
 ```
-GET https://v3-mail.priv.email/emails?address=admin@priv.email&limit=3   (list)
-GET https://v3-mail.priv.email/emails/<id>                               (body)
+GET https://v3-mail.priv.email/emails?address=admin@priv.email&limit=10&include_body=true
 ```
-Auth: Bearer QUERY_API_TOKEN **or** the admin session cookie (works today by
-running the fetch inside a v3-mail tab — the extension macro does exactly
-that; the tab must be FOCUSED or Chrome throttles background-tab fetches).
+Auth: `Authorization: Bearer <QUERY_API_TOKEN>` (the token ships as the
+extension's default config — popup.js DEFAULT_CONFIG). `include_body=true`
+returns `text_body` on every row, so ONE request per poll covers list + body.
+
+Since v0.9.5 the macro's `fetch` steps run in the **extension service worker**
+with the Bearer header — NO mail tab, NO admin-cookie session, NO tab-focus
+workarounds. (`credentials: 'omit'`; host_permissions bypass CORS.) The
+macro takes a baseline (`sinceId` = max row id) before sendTemporaryPassword
+so a re-run never submits a stale code from a previous run's email.
 
 ### 4. loginWithEmail
 
@@ -74,13 +84,20 @@ session cookies set on the browser.
    forward to Hotmail only; the worker never sees the body.
 3. **Apex vs v3-mail address form**: chained mail is stored under
    `to_address = admin@priv.email` (the apex form).
-4. **Background-tab fetch throttling**: Chrome stalls fetches in long-
-   backgrounded tabs — the macro focuses the mail tab while polling.
+4. **Login codes are mixed-case** ("bfDSXo"), signup codes are digits-only
+   ("493701") — extraction must accept `[A-Za-z0-9]` (first line of
+   text_body).
 5. Codes are single-use and expire ~10 min; each `sendTemporaryPassword`
    sends a fresh email (reputation cost — don't spam).
+6. Once the account EXISTS, getLoginOptions returns `hasAccount: true` and
+   the flow becomes a LOGIN (isNewSignup: false) — the same macro handles
+   both; only the email template differs.
+7. Cloudflare bot-blocks plain `python urllib` (403) on the worker host —
+   `curl` and browser/SW fetches are fine.
 
 ## Where it lives
 
 - `extension/macros/notion/signup-rest.json` — the full flow as a macro
-  (17 steps, zero clicks). The dry-run harness mocks all four endpoints
+  (19 steps, zero clicks, direct Bearer mail reads). The dry-run harness mocks
+  all four endpoints
   (tests/test_macro_dryrun.js) — request-shape regressions get caught.
