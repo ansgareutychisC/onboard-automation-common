@@ -39,3 +39,6 @@ build/
 secrets.json
 *turso*token*
 *.secret
+
+# Headless extension test artifacts
+tests/.tmp-chrome-profile/
