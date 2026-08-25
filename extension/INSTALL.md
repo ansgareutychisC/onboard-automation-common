@@ -39,7 +39,23 @@ verification, session capture.
   session in this browser): set `{"spaceId": "..."}` in inputs and run.
 - **`notion/signup`** — full signup + email verification. Just edit the email
   input (any `*@priv.email` address works — it's a catch-all).
-- **`notion/full-onboarding`** — the complete 36-step flow.
+  **Heads-up (Notion today):** the code email's subject is "Your Notion
+  signup code" with the code in the BODY — the inbox API can only read
+  subjects, so the macro detects the email and **stops fast** with
+  instructions instead of looping. Then:
+  1. grab the code from the forwarded mailbox
+     (`ansgareutychis@hotmail.com` — check **Junk**), and
+  2. run the **`notion/submit-code`** preset with `{"code": "XXXXXX"}` —
+     it types the code into the still-open signup tab and captures the
+     session.
+  (Alternative: re-run signup with `"manualCode": "XXXXXX"` in inputs —
+  skips polling entirely.)
+- **`notion/full-onboarding`** — the complete 36-step flow (same email-code
+  caveat as signup).
+
+**Stop button**: works. If anything misbehaves, press **Stop** — the run
+ends within ~1 step (the current step finishes first), and the "being
+debugged" banner clears when the macro ends.
 
 ## 5. Optional: dev daemon (agent-driven remote control)
 
@@ -60,6 +76,12 @@ curl -X POST http://127.0.0.1:3000/api/command \
 
 - **"retry: no http(s) tab available to evaluate condition"** — open any
   normal web page first (eval steps need a tab to run in).
+- **"a macro is already running"** — one macro at a time; press **Stop**
+  first, then run again.
+- **"code is NOT in the subject line" (fatal)** — expected on Notion today:
+  the email arrived but its code is in the body, which the inbox API can't
+  read. Get the code from Hotmail (Junk folder) and run `notion/submit-code`,
+  or re-run with `manualCode` set.
 - **No code found** — check the email actually arrived (ImprovMX logs API),
   and that the email input matches the alias you used.
 - Full docs: README.md, docs/MACROS.md, docs/EXTENSION-VS-CHROME-RD.md.

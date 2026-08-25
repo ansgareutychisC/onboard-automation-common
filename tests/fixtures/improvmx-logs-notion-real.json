@@ -1,0 +1,75 @@
+{
+  "_comment": "Real ImprovMX /logs response captured from the live Notion signup failure (2026-08-24). Notion sends the code in the email BODY \u2014 subject has no code. Fields trimmed to the shape the extraction reads.",
+  "success": true,
+  "logs": [
+    {
+      "created": 1787633915651,
+      "subject": "Your Notion signup code",
+      "sender": {
+        "email": "notify@updates.notion.so",
+        "name": null
+      },
+      "recipient": {
+        "email": "onboard@priv.email",
+        "name": null
+      },
+      "forward": {
+        "email": "ansgareutychis@hotmail.com",
+        "name": null
+      },
+      "events": [
+        {
+          "status": "DELIVERED",
+          "code": 250
+        }
+      ],
+      "id": "20260825045836.93ca079b6e574f5998e378ae61ec2bff"
+    },
+    {
+      "created": 1787615086101,
+      "subject": "test email routing",
+      "sender": {
+        "email": "ansgareutychis@proton.me",
+        "name": null
+      },
+      "recipient": {
+        "email": "admin@priv.email",
+        "name": null
+      },
+      "forward": {
+        "email": "ansgareutychis@hotmail.com",
+        "name": null
+      },
+      "events": [
+        {
+          "status": "DELIVERED",
+          "code": 250
+        }
+      ],
+      "id": "20260824234447.a5e7125e31ca4b4891b74e4ed95151a2"
+    },
+    {
+      "created": 1787289735981,
+      "subject": "~ Your ATM Visa Card",
+      "sender": {
+        "email": "webgfh6@outlook.com",
+        "name": null
+      },
+      "recipient": {
+        "email": "mk@priv.email",
+        "name": null
+      },
+      "forward": {
+        "email": "ansgareutychis@hotmail.com",
+        "name": null
+      },
+      "events": [
+        {
+          "status": "DELIVERED",
+          "code": 250
+        }
+      ],
+      "id": "20260821052216.1055213bf2bf4382ace8a96927b0996c"
+    }
+  ]
+}

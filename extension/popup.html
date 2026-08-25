@@ -289,6 +289,7 @@ Examples:
             <option value="">— Select a preset —</option>
             <optgroup label="Notion">
               <option value="notion/signup">signup (email verify + session capture)</option>
+              <option value="notion/submit-code">submit-code (paste code manually)</option>
               <option value="notion/create-workspace">create-workspace (existing account)</option>
               <option value="notion/activate-trial">activate-trial (needs hCaptcha token)</option>
               <option value="notion/create-api-key">create-api-key (PAT creation)</option>
@@ -304,7 +305,7 @@ Examples:
         <div style="margin-bottom:6px;">
           <label style="font-size:11px;color:#666;display:block;margin-bottom:3px;">Inputs (JSON):</label>
           <textarea id="macroInputs" rows="4" style="font-size:11px;" placeholder='{"email":"you@priv.email","workspaceName":"My Space"}'></textarea>
-          <div class="hint">Email API URL + token auto-fill from the config panel (left) when left empty here.</div>
+          <div class="hint">Email API URL + token auto-fill from the config panel (left) when left empty here. <b>manualCode</b>: paste a code to skip polling (for services that hide the code in the email body, e.g. Notion).</div>
         </div>
 
         <div style="margin-bottom:6px;">

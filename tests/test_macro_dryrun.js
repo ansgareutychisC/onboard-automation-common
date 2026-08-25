@@ -81,6 +81,9 @@ const TEST_INPUTS = {
     integrationName: 'test-pat',
     expiration: '1_year',
   },
+  'submit-code': {
+    code: 'XJ4K2B',
+  },
 };
 
 // Per-macro mock email subjects — exercises different extraction layers:
@@ -638,6 +641,12 @@ async function runStep(step, ctx, harDb, mockState) {
 
     case 'tabs.open':
       return { ok: true, tabId: 12345, url: resolved.url };
+
+    case 'tabs.list':
+      return { ok: true, tabs: [{ id: 12345, url: 'https://app.notion.com/signup', title: 'Notion', active: true, windowId: 1 }] };
+
+    case 'tabs.focus':
+      return { ok: true };
 
     case 'form.wait':
       return { ok: true, found: true, waitedMs: 100 };

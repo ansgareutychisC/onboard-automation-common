@@ -70,6 +70,12 @@ const state = {
   pending: new Map(),
   // Pending macro step results: {subId: resolve}
   pendingMacroResults: new Map(),
+  // Macro run control: only one macro at a time; Stop button sets the flag.
+  macroRunning: false,
+  macroCancelRequested: false,
+  // Tabs whose debugger we OWN and keep attached for the duration of a macro
+  // run (avoids the "being debugged" infobar flickering on every eval step).
+  debuggerStickyTabs: new Set(),
 };
 
 const MAX_LOG = 200;
@@ -1496,6 +1502,14 @@ async function handleFormWait(cmd) {
   };
 
   while (Date.now() - startTime < timeout) {
+    // Abort early when the user pressed Stop (only meaningful inside a macro
+    // run — the flag is otherwise always false).
+    if (state.macroCancelRequested) {
+      log('info', 'form.wait-cancelled', { id, tabId, selector });
+      capture('form.wait', { tabId, selector, found: false, cancelled: true, ok: false, error: 'cancelled by user' }, { id });
+      sendResult(id, { ok: false, cancelled: true, error: 'cancelled by user' });
+      return;
+    }
     if (await poll()) {
       const waitedMs = Date.now() - startTime;
       log('debug', 'form.wait-found', { id, tabId, selector, ms: waitedMs });
@@ -1521,14 +1535,8 @@ async function handleFormEval(cmd) {
   // The function body is wrapped: `(function(args){ <body> })(<args>)`
   // and evaluated via Runtime.evaluate, which returns the result directly.
   try {
-    // Attach the debugger
-    try {
-      await chrome.debugger.attach({ tabId }, '1.3');
-    } catch (err) {
-      if (!err.message.includes('Another debugger')) {
-        throw err;
-      }
-    }
+    // Attach the debugger (sticky-aware during macro runs)
+    await debuggerAttach(tabId);
     // Enable the Runtime domain
     await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
     // Build the expression — wrap the function body and call it with args
@@ -1544,10 +1552,8 @@ async function handleFormEval(cmd) {
         userGesture: true,
       }
     );
-    // Detach
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch (e) { /* already detached */ }
+    // Detach (sticky-aware during macro runs)
+    await debuggerDetach(tabId);
     const durationMs = Date.now() - startTime;
     if (evalResult.exceptionDetails) {
       const exc = evalResult.exceptionDetails;
@@ -1665,16 +1671,11 @@ async function handleXhrIntercept(cmd) {
   log('info', 'xhr.intercept-start', { id, tabId, urlPattern, method });
   capture('xhr.intercept', { tabId, urlPattern, method, timeoutMs: timeout, phase: 'start' }, { id });
 
-  // Attach the debugger to the tab
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3');
-  } catch (err) {
-    // "Another debugger is already attached" is OK — we're already attached
-    if (!err.message.includes('Another debugger')) {
-      capture('xhr.intercept', { tabId, urlPattern, ok: false, error: 'attach-failed: ' + err.message }, { id });
-      sendError(id, `Failed to attach debugger: ${err.message}`);
-      return;
-    }
+  // Attach the debugger to the tab (sticky-aware during macro runs)
+  const attached = await debuggerAttach(tabId);
+  if (!attached) {
+    // Another debugger owns this tab — we can still listen if it's ours from
+    // a sticky attach; if truly foreign, commands will fail below as before.
   }
 
   // Enable Network domain
@@ -1761,9 +1762,7 @@ async function handleXhrIntercept(cmd) {
         });
         // Detach
         chrome.debugger.onEvent.removeListener(listener);
-        try {
-          await chrome.debugger.detach({ tabId });
-        } catch (e) { /* already detached */ }
+        await debuggerDetach(tabId);
       }
     }
   };
@@ -1778,9 +1777,7 @@ async function handleXhrIntercept(cmd) {
         tabId, urlPattern, ok: false, error: 'timeout', timeoutMs: timeout, phase: 'timeout',
       }, { id });
       chrome.debugger.onEvent.removeListener(listener);
-      try {
-        await chrome.debugger.detach({ tabId });
-      } catch (e) { /* already detached */ }
+      await debuggerDetach(tabId);
       sendError(id, `No XHR matching ${urlPattern} within ${timeout}ms`);
     }
   }, timeout);
@@ -1923,19 +1920,59 @@ async function findEvalTabId(preferredTabId) {
   return httpTab ? httpTab.id : null;
 }
 
+// ---------------------------------------------------------------------------
+// Sticky-aware debugger attach/detach helpers.
+//
+// While a macro run is in flight, the FIRST attach to a tab is kept for the
+// rest of the run (state.debuggerStickyTabs) and detached in
+// handleMacroRun's finally block. Without this, every eval/form.eval step
+// (and every retry-loop condition check) attaches/detaches — the "…started
+// debugging this browser" infobar flickers in and out for the whole run,
+// which users read as "stuck in debugging mode". All debugger users MUST go
+// through these helpers so nobody detaches someone else's (or the sticky)
+// attachment.
+// ---------------------------------------------------------------------------
+
+// Attach the debugger to a tab. Returns true if WE own the attachment
+// (freshly attached, or already sticky from this run); false when another
+// debugger (e.g. DevTools) is attached — tolerated, as in the original code.
+async function debuggerAttach(tabId) {
+  if (state.macroRunning && state.debuggerStickyTabs.has(tabId)) return true;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+    if (state.macroRunning) state.debuggerStickyTabs.add(tabId);
+    return true;
+  } catch (err) {
+    if (err.message && err.message.includes('Another debugger')) return false;
+    throw err;
+  }
+}
+
+// Detach the debugger — unless the tab is sticky for the current macro run
+// (the run-end cleanup detaches all sticky tabs).
+async function debuggerDetach(tabId) {
+  if (state.debuggerStickyTabs.has(tabId)) return;
+  try {
+    await chrome.debugger.detach({ tabId });
+  } catch (e) { /* already detached */ }
+}
+
+// If the user cancels the debugger infobar on a sticky tab (or the tab closes),
+// drop it from the sticky set so we don't try to detach a ghost attachment.
+if (chrome.debugger && chrome.debugger.onDetach) {
+  chrome.debugger.onDetach.addListener((source) => {
+    if (source && source.tabId != null) {
+      state.debuggerStickyTabs.delete(source.tabId);
+    }
+  });
+}
+
 // Helper: evaluate a JS expression in a tab's main world via chrome.debugger.
 // Attaches the debugger (tolerating "already attached"), enables Runtime,
 // evaluates the expression, and detaches. Returns the expression's value.
 // Throws on any error (including eval errors inside the expression).
 async function evaluateInTab(tabId, expression) {
-  // Attach the debugger (idempotent — tolerate "Another debugger is already attached")
-  try {
-    await chrome.debugger.attach({ tabId }, '1.3');
-  } catch (err) {
-    if (!err.message.includes('Another debugger')) {
-      throw err;
-    }
-  }
+  await debuggerAttach(tabId);
   try {
     await chrome.debugger.sendCommand({ tabId }, 'Runtime.enable');
     const evalResult = await chrome.debugger.sendCommand(
@@ -1955,10 +1992,7 @@ async function evaluateInTab(tabId, expression) {
     }
     return evalResult.result?.value;
   } finally {
-    // Always detach, even on error
-    try {
-      await chrome.debugger.detach({ tabId });
-    } catch (e) { /* already detached */ }
+    await debuggerDetach(tabId);
   }
 }
 
@@ -2076,6 +2110,24 @@ async function handleMacroRun(msg) {
     return;
   }
 
+  // Only ONE macro at a time. A second concurrent run would interleave steps,
+  // fight over the sticky debugger tabs, and make Stop ambiguous.
+  if (state.macroRunning) {
+    const err = 'a macro is already running — click Stop first, then run again';
+    if (isPopup) {
+      // stillRunning tells the popup NOT to reset its Run/Stop buttons — the
+      // macro that IS running will send its own macro-complete later.
+      try { chrome.runtime.sendMessage({ type: 'macro-complete', result: { ok: false, error: err, name: macro.name, stillRunning: true } }); } catch (e) { /* popup not open */ }
+    } else {
+      sendError(id, err);
+    }
+    return;
+  }
+
+  state.macroRunning = true;
+  state.macroCancelRequested = false;
+  state.debuggerStickyTabs = new Set();
+
   const ctx = {
     inputs: { ...(macro.inputs || {}), ...(inputs || {}) },
     results: {},
@@ -2093,6 +2145,12 @@ async function handleMacroRun(msg) {
   const stepResults = [];
   try {
     for (let i = 0; i < macro.steps.length; i++) {
+      // User pressed Stop — abort between steps. (The in-flight step finishes
+      // first; form.wait also checks the flag at its poll cadence, and the
+      // retry block checks between attempts, so worst case is one step.)
+      if (state.macroCancelRequested) {
+        throw new Error('Macro cancelled by user');
+      }
       const step = macro.steps[i];
       const stepLabel = step.id ? `#${i + 1} (${step.id}: ${step.cmd})` : `#${i + 1} (${step.cmd})`;
       const stepStart = Date.now();
@@ -2250,6 +2308,17 @@ async function handleMacroRun(msg) {
     if (!isPopup) {
       sendResult(id, summary);
     }
+  } finally {
+    // Run cleanup — ALWAYS, success / failure / cancellation alike:
+    //   1. Detach every debugger we kept attached for this run (clears the
+    //      "being debugged" infobar — the user's "exit that mode").
+    //   2. Reset the run-control flags so the next macro can start.
+    for (const tid of state.debuggerStickyTabs) {
+      try { await chrome.debugger.detach({ tabId: tid }); } catch (e) { /* already detached */ }
+    }
+    state.debuggerStickyTabs.clear();
+    state.macroRunning = false;
+    state.macroCancelRequested = false;
   }
 }
 
@@ -2322,6 +2391,11 @@ async function executeRetryBlock(step, ctx) {
   let attempts = 0;
 
   while (Date.now() < deadline) {
+    // User pressed Stop — abort between attempts (at most one in-flight
+    // attempt + one interval of latency).
+    if (state.macroCancelRequested) {
+      return { ok: false, cancelled: true, error: 'Macro cancelled by user', attempts, lastResult };
+    }
     attempts++;
     // Capture each retry attempt so the diagnostics panel + fixtures show
     // how many iterations occurred and what the condition evaluated to.
@@ -2337,6 +2411,7 @@ async function executeRetryBlock(step, ctx) {
     // the parent ctx.results, but are available for condition evaluation)
     const subCtx = { inputs: ctx.inputs, results: { ...ctx.results }, startedAt: Date.now() };
     let stepError = null;
+    let fatalResult = null;  // a sub-step flagged the situation as un-retryable
     for (const subStep of subSteps) {
       try {
         const r = await executeMacroStep(subStep, subCtx);
@@ -2346,6 +2421,14 @@ async function executeRetryBlock(step, ctx) {
           ctx.results[subStep.id] = r;
         }
         lastResult = r;
+        // FATAL: a sub-step can declare "this will never succeed — stop
+        // polling" by returning { fatal: true, error } (e.g. the email chunk
+        // when the verification email arrives but its code is not readable
+        // via the inbox API). Retrying would just burn the timeout.
+        if (r && r.fatal === true) {
+          fatalResult = r;
+          break;
+        }
         // Strict failure check (same as the top-level macro runner).
         if (r && r.ok === false && subStep.onError !== 'continue') {
           stepError = r.error || 'sub-step failed';
@@ -2355,6 +2438,16 @@ async function executeRetryBlock(step, ctx) {
         stepError = err.message;
         break;
       }
+    }
+
+    if (fatalResult) {
+      log('warn', 'macro-retry-fatal', { stepId: step.id || null, error: fatalResult.error });
+      capture('macro.retry', { stepId: step.id || null, fatal: true, error: fatalResult.error, attempt: attempts });
+      return { ok: false, fatal: true, error: fatalResult.error, attempts, lastResult: fatalResult };
+    }
+
+    if (state.macroCancelRequested) {
+      return { ok: false, cancelled: true, error: 'Macro cancelled by user', attempts, lastResult };
     }
 
     if (!stepError) {
@@ -2624,6 +2717,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getMacroResult') {
     // Fetch the last macro result (if any)
     sendResponse({ result: state.lastMacroResult || null });
+    return false;
+  }
+  // Stop the running macro — sets the cancellation flag checked between
+  // steps, between retry attempts, and in form.wait's poll loop. The current
+  // in-flight step finishes; a macro-complete message with the cancellation
+  // error follows shortly after.
+  if (msg.type === 'stopMacro') {
+    if (!state.macroRunning) {
+      sendResponse({ ok: true, wasRunning: false });
+      return false;
+    }
+    state.macroCancelRequested = true;
+    log('warn', 'macro-stop-requested', {});
+    capture('macro.stop', { requested: true });
+    sendResponse({ ok: true, wasRunning: true });
     return false;
   }
   // Quick Exec — run a SINGLE command through the same engine the macro

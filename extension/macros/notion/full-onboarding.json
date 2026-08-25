@@ -6,11 +6,12 @@
     "email": "",
     "emailWorkerUrl": "https://api.improvmx.com/v3/domains/priv.email/logs?take=20",
     "emailWorkerToken": "",
-    "extractionJs": "(args) => { try { const data = JSON.parse(args.body); const logs = data.logs || []; const sinceMs = Math.max(0, (Math.max(0, (Number(args.sinceMs) || 0) - (Number(args.graceMs) || 120000))) - (Number(args.graceMs) || 120000)); const recipient = (args.email || '').toLowerCase(); for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; const subj = log.subject || ''; const sender = (log.sender && log.sender.email) || ''; if (!/notion/i.test(sender) && !/notion/i.test(subj)) continue; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\s*(?:Notion\\s*)?(?:login|verification|signup|pass)?\\s*code/i, /(?:login|verification|signup|pass)\\s*code(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i, /code[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'notion-subject', subject: subj.slice(0, 100), logId: log.id }; } } return { code: null, reason: logs.length ? 'no Notion code in recent subjects' : 'no emails yet', logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }",
+    "extractionJs": "(args) => { try { if (args.manualCode) return { code: String(args.manualCode).trim(), source: 'manual' }; const data = JSON.parse(args.body); const logs = data.logs || []; const sinceMs = Math.max(0, (Number(args.sinceMs) || 0) - (Number(args.graceMs) || 120000)); const recipient = (args.email || '').toLowerCase(); let best = null; for (const log of logs) { const created = log.created || 0; if (sinceMs && created && created < sinceMs) continue; const to = ((log.recipient && log.recipient.email) || '').toLowerCase(); if (recipient && to && to !== recipient) continue; const subj = log.subject || ''; const sender = (log.sender && log.sender.email) || ''; if (!/notion/i.test(sender) && !/notion/i.test(subj)) continue; if (!best || created > best.created) best = { created, subject: subj, id: log.id }; } if (!best) return { code: null, reason: logs.length ? 'no Notion email newer than sinceMs for this recipient' : 'no emails yet', logCount: logs.length }; const subj = best.subject; const layers = [ /([A-Za-z0-9]{4,10})\\s+is\\s+(?:your|the)\\s*(?:Notion\\s*)?(?:login|verification|signup|pass)?\\s*code/i, /(?:login|verification|signup|pass)\\s*code(?:\\s+is)?[:\\s]+([A-Za-z0-9]{4,10})\\b/i, /code[:\\s]+([A-Za-z0-9]{4,10})\\b/i ]; for (const re of layers) { const m = subj.match(re); if (m && /^[A-Za-z0-9]+$/.test(m[1])) return { code: m[1], source: 'notion-subject', subject: subj.slice(0, 100), logId: best.id }; } if (/(code|verify|verification|login|passcode|confirm|signup|otp|one[- ]?time)/i.test(subj)) { return { code: null, fatal: true, logId: best.id, subject: subj.slice(0, 100), error: 'The Notion verification email arrived (\"' + subj.slice(0, 80) + '\") but the code is NOT in the subject line — Notion puts it in the email body, and the ImprovMX inbox API only exposes subjects. Get the code from the forwarded mailbox (ansgareutychis@hotmail.com — check Junk), then run the notion/submit-code macro to type it into the still-open signup tab. (Or re-run signup with inputs.manualCode set — it skips polling.) Long-term fix: an email source that exposes bodies.' }; } return { code: null, reason: 'no code pattern in subject', subject: subj.slice(0, 100), logCount: logs.length }; } catch (e) { return { code: null, error: e.message }; } }",
     "locale": "en-US",
     "timezone": "America/Los_Angeles",
     "workspaceName": "My Workspace",
-    "workspaceIcon": "🏠"
+    "workspaceIcon": "🏠",
+    "manualCode": ""
   },
   "steps": [
     {
@@ -91,7 +92,8 @@
           "args": {
             "body": "{{fetch-email.body}}",
             "email": "{{inputs.email}}",
-            "sinceMs": "{{email-now.now}}"
+            "sinceMs": "{{email-now.now}}",
+            "manualCode": "{{inputs.manualCode}}"
           }
         }
       ]

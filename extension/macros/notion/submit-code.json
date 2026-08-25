@@ -1,0 +1,79 @@
+{
+  "name": "submit-code",
+  "service": "notion",
+  "description": "Manually submit a Notion verification code into the ALREADY-OPEN signup tab. Use this when notion/signup detected the code email but could not read the code from the subject line (Notion puts it in the email body — get it from the forwarded mailbox, remember to check Junk). Finds the Notion tab, focuses it, fills the code, clicks Continue, waits for the redirect, and captures the session cookies — the same finish as signup's tail. Does NOT clear cookies or re-request a code.",
+  "inputs": {
+    "code": "PASTE_THE_6_CHAR_CODE"
+  },
+  "steps": [
+    {
+      "id": "list-tabs",
+      "cmd": "tabs.list"
+    },
+    {
+      "id": "find-signup-tab",
+      "cmd": "eval",
+      "function": "(args) => { const tabs = args.tabs || []; const t = tabs.find(x => /app\\.notion\\.com\\/[^\\/]*(signup|login)/i.test(x.url || '')) || tabs.find(x => /app\\.notion\\.com/.test(x.url || '')); return t ? { ok: true, tabId: t.id, url: t.url } : { ok: false, error: 'No Notion tab found — keep the signup tab open (or open app.notion.com) and re-run' }; }",
+      "args": {
+        "tabs": "{{list-tabs.tabs}}"
+      }
+    },
+    {
+      "id": "focus-tab",
+      "cmd": "tabs.focus",
+      "tabId": "{{find-signup-tab.tabId}}"
+    },
+    {
+      "id": "wait-code-field",
+      "cmd": "form.wait",
+      "tabId": "{{find-signup-tab.tabId}}",
+      "selector": "input[placeholder='Enter code']",
+      "timeoutMs": 10000
+    },
+    {
+      "id": "fill-code",
+      "cmd": "form.fill",
+      "tabId": "{{find-signup-tab.tabId}}",
+      "selector": "input[placeholder='Enter code']",
+      "value": "{{inputs.code}}"
+    },
+    {
+      "id": "click-continue",
+      "cmd": "form.eval",
+      "tabId": "{{find-signup-tab.tabId}}",
+      "function": "const btns = document.querySelectorAll('div[role=\"button\"]'); for (const b of btns) { if (b.innerText.trim() === 'Continue') { b.click(); return { clicked: true }; } } return { clicked: false };",
+      "args": []
+    },
+    {
+      "id": "wait-redirect",
+      "cmd": "form.eval",
+      "tabId": "{{find-signup-tab.tabId}}",
+      "function": "return new Promise((resolve) => { const check = () => { const url = window.location.href; if (url.includes('/onboarding') || (url.includes('app.notion.com') && !url.includes('/signup') && !url.includes('/login'))) { resolve({ redirected: true, url }); return; } setTimeout(check, 1000); }; check(); });",
+      "args": [],
+      "timeoutMs": 60000
+    },
+    {
+      "id": "get-cookies",
+      "cmd": "cookies.getAll",
+      "url": "https://app.notion.com"
+    },
+    {
+      "id": "extract-creds",
+      "cmd": "eval",
+      "function": "(args) => { const cookies = args.cookies || []; const map = {}; for (const c of cookies) map[c.name] = c.value; return { userId: map.notion_user_id || '', tokenV2: map.token_v2 || '', deviceId: map.notion_device_id || '' }; }",
+      "args": {
+        "cookies": "{{get-cookies.cookies}}"
+      }
+    },
+    {
+      "id": "final-result",
+      "cmd": "log",
+      "message": "🎉 Code submitted — session captured. Continue with create-workspace / full-onboarding steps as needed.",
+      "data": {
+        "userId": "{{extract-creds.userId}}",
+        "tokenV2": "{{extract-creds.tokenV2}}",
+        "deviceId": "{{extract-creds.deviceId}}"
+      }
+    }
+  ]
+}

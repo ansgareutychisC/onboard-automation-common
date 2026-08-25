@@ -172,6 +172,7 @@ The extension bundles presets under `extension/macros/`, organized by service:
 | Preset | Description | Requires |
 |---|---|---|
 | `notion/signup` | Signup + email verification + session capture (17 steps) | Email API config |
+| `notion/submit-code` | Type a pasted verification code into the open signup tab | The code (from Hotmail) |
 | `notion/create-workspace` | Create a workspace on an existing account | Active session |
 | `notion/activate-trial` | Activate 14-day business trial | hCaptcha P1_ token |
 | `notion/create-api-key` | Create a PAT | Active session + spaceId |
@@ -205,6 +206,23 @@ chunk of record is `wait-for-verification-email`:
   window** (`args.graceMs` overrides) — so emails created between the signup
   click and the first poll (any fast sender) still pass, while genuinely
   stale codes from a previous run are filtered.
+- **`manualCode` input**: when set, the extraction returns it immediately —
+  no polling. Escape hatch for services whose code email doesn't expose the
+  code in the subject (Notion does exactly this).
+- **Fail-fast (`fatal`) semantics**: when a code-shaped email for this
+  recipient ARRIVES (subject matches /code|verify|login|passcode|confirm|
+  signup|otp/i) but no code is extractable from the subject, the extraction
+  returns `{fatal: true, error: <actionable message>}` and the retry runner
+  ABORTS immediately — distinguish "not yet" (keep polling) from "never"
+  (this API cannot read the code). Non-code emails (digests, welcomes)
+  never trigger fatal.
+- **Reality check (2026-08-24 live finding)**: Notion's code email is
+  "Your Notion signup code" with the code in the BODY. ImprovMX `/logs`
+  exposes subjects only — so for Notion today the flow is: signup runs,
+  detects the email, fails fast with instructions; you grab the code from
+  Hotmail (Junk folder) and either re-run with `manualCode` or run
+  `notion/submit-code`. The long-term fix is an email source with body
+  access (e.g. a Cloudflare Email Routing worker storing bodies in Turso).
 - When a service's email format changes, edit that service macro's
   `extractionJs` input default (e.g. `macros/notion/signup.json`) — one file,
   no extension code changes, no lockstep updates.

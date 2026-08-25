@@ -50,7 +50,7 @@ the macro JSON's `eval` step source, `popup.js` DEFAULT_INPUTS, and
 `run_bridge_aiohttp.py`). Updating all 4 in lockstep was the painful
 stabilization the user lived through.
 
-**The fix (IMPLEMENTED, commit 6fd13f3):** the extraction logic is a
+**The fix (IMPLEMENTED, commits 6fd13f3 → 6fd13f3+):** the extraction logic is a
 per-service macro INPUT (`extractionJs`), not extension code.
 - `macros/_shared/wait-for-verification-email.json` holds the canonical
   email chunk (step ids: `email-auth`, `email-now`, `get-verification-code`,
@@ -70,8 +70,31 @@ per-service macro INPUT (`extractionJs`), not extension code.
   step builds the header via `btoa` and fails with a clear message when
   the token is empty.
 - The `email-now` step stamps `Date.now()` before the retry starts; the
-  extraction skips emails older than that (`sinceMs` filter) so a re-run
-  seconds later can't pick up the PREVIOUS run's code.
+  extraction skips emails older than that (`sinceMs` filter, minus a grace
+  window — see §1.5) so a re-run seconds later can't pick up the PREVIOUS
+  run's code.
+
+**THE 2026-08-24 LIVE FINDING (the most important fact in this section):**
+Notion's real code email has subject **"Your Notion signup code"** (sender
+`notify@updates.notion.so`) — **the code is in the email BODY, not the
+subject.** ImprovMX `/logs` exposes subjects only. Therefore **subject-only
+extraction can NEVER work for Notion's current template** — no regex fixes
+this. Consequences (all implemented in v0.9.2):
+- The extraction returns `{fatal: true, error: <actionable message>}` when a
+  code-shaped email ARRIVES but no code is extractable from the subject.
+  The retry runner aborts IMMEDIATELY on `fatal` (no 3-minute silent loop).
+  Non-code emails (digests, welcomes) never trigger fatal — polling
+  continues.
+- `inputs.manualCode` bypasses polling entirely (extraction returns it
+  immediately) — paste the code from the forwarded Hotmail (check Junk).
+- `notion/submit-code.json` is a standalone macro that types a pasted code
+  into the still-open signup tab and captures the session — the manual
+  finish that doesn't waste the already-requested code.
+- **Long-term fix (needs user infra decision): an email source with body
+  access** — e.g. Cloudflare Email Routing on priv.email with a Worker that
+  stores bodies in Turso (the old privatimail.com worker did exactly this;
+  it died because Notion blocked that domain, not because the pattern was
+  wrong). ImprovMX simply cannot provide bodies.
 
 ### 1.3 Email worker URL is per-domain — never hardcode `privatimail.com`
 
@@ -258,7 +281,42 @@ second arg silently passes it as the function's argument and the default
 30s timeout applies. Symptom: "Timeout 30000ms exceeded" when you asked for
 90s. Always `waitForFunction(fn, undefined, { timeout })`.
 
-### 1.15 Don't trust commit messages that reference files that don't exist
+### 1.16 Your tests are only as real as your fixtures — and every long loop ships with a working STOP
+
+The 2026-08-24 live failure taught this the hard way. All 121 automated
+checks passed while the extension sat dead-stuck on the user's real signup:
+
+1. **Synthetic fixtures validated the wrong assumption.** Every test email
+   had the code in the SUBJECT ("Your login code is XJ4K2B"). Notion's real
+   email: subject "Your Notion signup code", code in the BODY. The failure
+   wasn't logic — it was the fixture. Mitigations now in place:
+   - `tests/fixtures/improvmx-logs-notion-real.json` — the ACTUAL /logs
+     response from the failed run, replayed in the standing test suite.
+   - When a real run fails, export the capture (popup → JSON) and turn the
+     interesting events into fixtures. The capture export already proved
+     its worth: the whole root-cause analysis came from the user's file.
+2. **The Stop button was a no-op placeholder inherited from the fork**
+   ("Currently no graceful stop — just re-enable the button"). Shipping a
+   180s polling loop without cancellation made a recoverable failure into
+   a 3-minute trap with a flickering debugger banner. Now implemented:
+   `state.macroCancelRequested` checked between steps, between retry
+   attempts, and in form.wait's poll loop; popup Stop → `stopMacro`
+   message; one-macro-at-a-time guard; sticky debugger tabs detached in
+   the run's `finally`.
+3. **Fail FAST when success is impossible.** A retry loop should abort the
+   moment a sub-step declares `fatal: true` ("the code email arrived but the
+   code isn't readable via this API") instead of burning the full timeout.
+   Distinguish "not yet" (keep polling) from "never" (abort with an
+   actionable message).
+4. **The debugger infobar flicker reads as "broken".** attach/detach per
+   eval step made the "…started debugging this browser" banner flash every
+   10s during polling. Sticky attach for the duration of a run (one stable
+   banner, detached at run end) fixed the UX AND exposed a latent bug:
+   form.eval/xhr.intercept had their own inline attach/detach and would
+   detach each other's attachments. All debugger use now goes through
+   `debuggerAttach`/`debuggerDetach`.
+
+### 1.17 Don't trust commit messages that reference files that don't exist
 
 The notion repo's commit `91b75cb` claims "All 4 macros pass (56/56 steps
 total)" and "18 pytest tests pass" — but the test scripts

@@ -156,6 +156,25 @@ async function main() {
   const rAuth3 = runExtraction(authFn, { token: 'Bearer abc123' });
   check('email-auth: ready-made Bearer header passes through', rAuth3.header === 'Bearer abc123', JSON.stringify(rAuth3));
 
+  // --- 8. REGRESSION: replay the REAL captured failure (2026-08-24).
+  // Notion's code email arrived with subject "Your Notion signup code" —
+  // the code is in the BODY. Subject-only extraction must fail FATAL with
+  // the actionable message, and manualCode must bypass it.
+  const realFixture = fs.readFileSync(path.join(__dirname, 'fixtures', 'improvmx-logs-notion-real.json'), 'utf8');
+  const notionJs2 = JSON.parse(fs.readFileSync(MACROS.notion, 'utf8')).inputs.extractionJs;
+  const since = JSON.parse(realFixture).logs[0].created + 1000;
+  const rr = runExtraction(notionJs2, { body: realFixture, email: 'onboard@priv.email', sinceMs: since });
+  check('REGRESSION real capture: code email w/o code in subject → fatal',
+    rr.fatal === true && /email body/i.test(rr.error || ''), JSON.stringify(rr).slice(0, 300));
+  check('REGRESSION real capture: fatal message names the escape hatches',
+    /submit-code|manualCode/i.test(rr.error || ''), (rr.error || '').slice(0, 200));
+  const rm = runExtraction(notionJs2, { body: realFixture, email: 'onboard@priv.email', sinceMs: since, manualCode: 'ABC123' });
+  check('REGRESSION real capture: manualCode bypasses the unreadable email',
+    rm.code === 'ABC123' && rm.source === 'manual', JSON.stringify(rm));
+  const rg = runExtraction(genericJs, { body: realFixture, email: 'onboard@priv.email', sinceMs: since });
+  check('REGRESSION real capture: generic extraction also fails fatal (not silently)',
+    rg.fatal === true, JSON.stringify(rg).slice(0, 300));
+
   console.log(failures === 0 ? '\nALL LIVE EXTRACTION TESTS PASS' : `\n${failures} FAILURES`);
   process.exit(failures === 0 ? 0 : 1);
 }

@@ -298,9 +298,15 @@ chrome.runtime.onMessage.addListener((msg) => {
     renderStatus(msg.status);
   } else if (msg.type === 'macro-complete') {
     showMacroResult(msg.result);
-    runMacroBtn.disabled = false;
-    runMacroBtn.textContent = '▶ Run Macro';
-    stopMacroBtn.disabled = true;
+    // stillRunning = a second run was REJECTED because one is already active.
+    // Keep the Run button disabled / Stop enabled — the active macro will
+    // send its own macro-complete and reset the buttons then.
+    if (!msg.result || !msg.result.stillRunning) {
+      runMacroBtn.disabled = false;
+      runMacroBtn.textContent = '▶ Run Macro';
+      stopMacroBtn.disabled = true;
+      stopMacroBtn.textContent = 'Stop';
+    }
   } else if (msg.type === 'quickExec-result' && msg.id) {
     // Result of a Quick Exec command (see the Quick Exec section below).
     if (msg.id === pendingQuickExecId) {
@@ -334,10 +340,13 @@ const presetCache = {};
 // panel (which itself ships with the priv.email/ImprovMX defaults), so a
 // fresh install can run the email presets with zero configuration. Only the
 // email itself may need editing (any *@priv.email alias works — catch-all).
+// manualCode: escape hatch for services whose code email doesn't expose the
+// code in the subject line (Notion does this) — set it to skip polling.
 const DEFAULT_INPUTS = {
   email: 'onboard@priv.email',
   workspaceName: 'My Workspace',
   workspaceIcon: '🏠',
+  manualCode: '',
   emailWorkerUrl: '',
   emailWorkerToken: '',
   locale: 'en-US',
@@ -382,6 +391,11 @@ macroPresetSelect.addEventListener('change', async () => {
       workspaceName: 'New Workspace',
       workspaceIcon: '🚀',
       planType: 'personal',
+    }, null, 2);
+  } else if (name === 'notion/submit-code') {
+    // Manual verification-code submission — only needs the code itself.
+    macroInputsTextarea.value = JSON.stringify({
+      code: 'PASTE_THE_6_CHAR_CODE',
     }, null, 2);
   } else if (name === '_shared/self-test') {
     // The self-test preset targets the LOCAL toy signup site — it must NOT
@@ -457,14 +471,31 @@ runMacroBtn.addEventListener('click', async () => {
     runMacroBtn.disabled = false;
     runMacroBtn.textContent = '▶ Run Macro';
     stopMacroBtn.disabled = true;
+    stopMacroBtn.textContent = 'Stop';
   }
 });
 
-stopMacroBtn.addEventListener('click', () => {
-  // Currently no graceful stop — just re-enable the button.
-  // A full stop would require a cancellation token in the macro runner.
+stopMacroBtn.addEventListener('click', async () => {
+  // Actually stop: sets the cancellation flag in the background runner.
+  // The current in-flight step finishes (worst case ~one retry interval or
+  // a step timeout), then a macro-complete with the cancellation error
+  // arrives and re-enables the Run button.
   stopMacroBtn.disabled = true;
-  macroResultArea.textContent += '\n⚠ Stop requested (current step will finish).';
+  stopMacroBtn.textContent = 'Stopping…';
+  macroResultArea.textContent += '\n⏹ Stop requested — finishing the current step…';
+  try {
+    const resp = await chrome.runtime.sendMessage({ type: 'stopMacro' });
+    if (resp && resp.wasRunning === false) {
+      macroResultArea.textContent += '\n(no macro was running)';
+      runMacroBtn.disabled = false;
+      runMacroBtn.textContent = '▶ Run Macro';
+      stopMacroBtn.textContent = 'Stop';
+    }
+  } catch (e) {
+    macroResultArea.textContent += '\n⚠ Stop failed: ' + e.message;
+    stopMacroBtn.disabled = false;
+    stopMacroBtn.textContent = 'Stop';
+  }
 });
 
 function showMacroResult(result) {

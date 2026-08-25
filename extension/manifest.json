@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Onboard Automation Bridge",
-  "version": "0.9.1",
+  "version": "0.9.2",
   "description": "Service-agnostic browser automation proxy with local macro replay mode. Executes fetch/form/XHR commands from your real browser context to bypass hCaptcha enterprise. Supports standalone macro replay (no backend) or optional WS connection to a Python dev daemon for agent-driven interactive debugging.",
   "permissions": [
     "storage",
