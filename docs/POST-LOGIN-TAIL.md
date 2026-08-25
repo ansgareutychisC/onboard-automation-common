@@ -111,7 +111,8 @@ Live shape (captured from the real web client 2026-08-25):
         "timezone": "America/Los_Angeles", "userId": "<uid>",
         "userEmail": "<email>", "spaceName": "<name>", "spaceId": "<sid>",
         "spaceViewId": "<svid>", "currentDatetime": "<ISO ms local>",
-        "surface": "ai_module" } },
+        "surface": "ai_module",
+        "context_page_id": "<page-id>"   // OPTIONAL — see §3b } },
     { "id": "<uuid>", "type": "user", "userId": "<uid>",
       "value": [["What is 2+2? Answer with just the number."]],
       "createdAt": "<ISO ms local>" } ],
@@ -144,6 +145,127 @@ Notes:
   `enableAgentAskSurvey` new; `model/agentSource/disableTodos/
   onboardingAgentVersion` absent.
 
+### 3b. COMPLETE chat support (live-verified 2026-08-25, extension-free)
+
+Everything below ran from the sandbox (direct route, Zenrows fallback)
+against a saved session — NO browser, NO extension. All of it is wired
+into `backend/notion_tail.py` as steps/flags.
+
+**The streaming protocol (decoded from raw NDJSON dumps):**
+
+- `patch-start` carries `data.s` — the INITIAL records (includes
+  `agent-instruction-state`, the injected instruction/skill state).
+- `a /s/-` appends a record. An `agent-inference` record's `value` is a
+  list of TYPED parts: `{"type":"thinking"}` = chain-of-thought,
+  `{"type":"text"}` = the user-visible reply. They MUST be separated or
+  the reply leaks CoT (observed live).
+- `x /s/N/value/K/content` ops **APPEND** text chunks to part K — `o:"x"`
+  is *extend*, NOT replace (final text = initial content + all `x`
+  chunks concatenated: "MAR"+"SH"+"M"+"ALLOW" = "MARSHMALLOW").
+- Terminal `a /s/N/model|inputTokens|outputTokens|cachedTokensRead|
+  maxContextTokens` carry the resolved model + usage (the model name is
+  ONLY here — absent from the add op).
+- A `record-map` line near the end carries the settled thread record
+  (`last_turn_outcome`, `usage_summary` incl. credit accounting).
+- Post-completion fallback: `syncRecordValuesSpaceInitial`
+  (thread → `value.value.messages[]` → `thread_message` records →
+  concat `step.value` text parts of the agent-inference steps). Use when
+  the stream closes before the final text lands (observed: reply empty
+  in-stream, present in the settled record).
+
+**The exact models** (`--step models`; saved to `session.models`, raw
+snapshot `backend/notion_models_live.json`):
+
+- `POST /api/v3/getAvailableModels {"spaceId}` → 31 models on a
+  business-trial space, each with `modelConfiguration
+  .supportedReasoningEfforts` + `defaultReasoningEffort`, family
+  (anthropic/openai/gemini/xai/mystery), displayGroup (fast/
+  intelligent), modelCardAttributes (speed/intelligence/cost).
+- `POST /api/v3/getAiPickableModels {}` → 92 codenames (the full
+  universe incl. effort-suffixed variants).
+- `restrictedAccessModelsInPickerConfig` — e.g. `acai-budino` "Fable 5"
+  base variant: `trial_not_allowed` (the `-high` variant IS available).
+- Selecting a model: config `model: "<codename>"` +
+  `modelFromUser: true` (+ optional `reasoningEffort` from the model's
+  supported list). Live-verified: `orange-mousse` (GPT-5.6 Sol),
+  `angel-cake-high` (Sonnet 5, `maxContextTokens: 200000` vs 400000 for
+  opal-quince). Notable: model-selected runs use a much leaner prompt
+  (4807 input tokens vs 21356 on the default agent path) — the server
+  routes them through a lighter pipeline.
+- The un-selected default resolves server-side: `model: opal-quince`
+  (GPT-5.5) at capture time.
+
+**Assigning an instruction page (the agent's persistent system prompt):**
+HAR call #36 ground truth — TWO operations in one
+`saveTransactionsFanout` (`userAction: setAsInstruction.on`):
+1. `prompt` table `set`: `{id: <prompt_uuid>, space_id, parent_id:
+   <page_id>, parent_table: "block", version: 1, created_time,
+   alive: true, prompt_type: "instruction"}`
+2. `space_view` `settings` `update`: `agent_personalization_settings
+   .context_page_id = <page_id>` (WITHOUT this op the page never becomes
+   the agent's personalization context — the ref's implementation only
+   sends op 1.)
+
+Then chat with `context.context_page_id = <page_id>`. The page becomes
+the thread's `persistent_instructions_page` (visible in
+`agent-instruction-state` inside patch-start) — **the agent READS the
+page and FOLLOWS directives on it.** Live proof: page saying "end every
+reply with PINEAPPLE" → "What is 2+2?" → "2 + 2 = 4 PINEAPPLE" (and
+without the context: "2 + 2 = 4"). The web client sends the
+personalization page as `context_page_id` on EVERY chat (HAR #55/#63/#65)
+— `notion_tail.py` replicates this automatically when
+`session.instructionPageId` is set.
+
+**Assigning a skill page:** HAR call #54 — same `prompt` table op with
+`prompt_type: "skill"` (userAction `topbarMoreActionRegistry
+.setAsAiSkill`; different page — PostgresUniqueViolation otherwise).
+Skills auto-surface to the agent via the Skills V2 runtime
+(`enableAgentSkillsV2: true` in the live config; the agent loads
+`modules/skills/minified/AGENTS.md`): it READS the page on demand,
+APPLIES it, and CITES it — live proof: page "Skill: wordflip = reverse
+the word's letters" → "wordflip chat" → "tahc[^<link to the skill
+page>]". Skills PERSIST across follow-up turns.
+
+**Chatting ON a Notion page (as attachment/context):**
+`context.context_page_id = <page_id>` (primary shape) or
+`context.blockId = <page_id>` (alternative; both live-verified). The
+agent fetches the page via a tool (`isContextInstructionsPage: true` in
+the tool result) and answers from its content — live proof: page with
+"The secret word is MARSHMALLOW" → "What is the secret word in my
+page?" → "MARSHMALLOW". Page content read on DEMAND (agentic decision)
+— a trivial prompt may skip the fetch.
+
+**Multi-turn follow-ups:** same body with `threadId: <existing>`,
+`createThread: false`, `isPartialTranscript: true`, `generateTitle:
+false`. Live proof: "And what about 3+3?" on an instruction thread →
+"3 + 3 = 6 PINEAPPLE" (instruction persists; 20992/21541 input tokens
+cache-hit = ~97% on turn 2).
+
+**Pages to chat on** are created via the PUBLIC API
+(`--step page`, uses the space's `ntn_` key from the apikey step):
+`POST https://api.notion.com/v1/pages` with
+`parent: {type: "workspace", workspace: true}` + children paragraph
+blocks. This sidesteps the broken app-API CRDT create_page (see
+Known-broken) — the chat agent reads public-API pages identically.
+
+**CLI examples:**
+
+```bash
+python3 backend/notion_tail.py --session S --step models
+python3 backend/notion_tail.py --session S --step page \
+    --page-title "Agent Rules" \
+    --page-content "Always end replies with PINEAPPLE."
+python3 backend/notion_tail.py --session S --step instruct   # latest page
+python3 backend/notion_tail.py --session S --step skill \
+    --page-id <uuid>          # or a specific page
+python3 backend/notion_tail.py --session S --step chat \
+    --prompt "What is 2+2?"   # auto-uses instruction page as context
+python3 backend/notion_tail.py --session S --step chat \
+    --prompt "Say ready" --chat-model angel-cake-high --chat-effort low
+python3 backend/notion_tail.py --session S --step chat \
+    --prompt "now upper cherry" --chat-thread <threadId>   # follow-up
+```
+
 ## Known-broken (and why we do NOT care)
 
 **`create_page` (saveTransactions block-set) fails with
@@ -155,8 +277,11 @@ succeeds because of session state established by earlier calls
 not because of a body diff. Bisected: cookies (all 16 browser cookies vs
 trio), transaction-level `spaceId`, and the audit header are all NOT the
 fix. **We deliberately stop here** — page creation is one call away via
-the official Notion API (`POST /v1/pages` with an integration token) or
-by just asking the chat agent to create it, which works.
+the official Notion API (`POST /v1/pages` with an integration token —
+NOW IMPLEMENTED as `--step page`) or by just asking the chat agent to
+create it, which works. (The new block-edit protocol is `insertText`
+ops with `textInstanceId`/`id: [site, counter]`/`prevItems` — captured
+in the Aug-11 HAR for future reference.)
 
 ## Where it lives
 

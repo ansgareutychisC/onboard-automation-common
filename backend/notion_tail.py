@@ -38,6 +38,33 @@ Steps (all idempotent — each one skips work that is already done):
                 [config, context, user] (the ref's stale 4-item shape dies
                 at step_count:0). Streams NDJSON, extracts the reply text.
 
+Complete chat support (live-verified 2026-08-25, extension-free):
+    models      getAvailableModels (+ getAiPickableModels) — the EXACT
+                model list for the space: codename, display name, family,
+                reasoning efforts, default effort. Saved to session[models].
+    page        create a page WITH CONTENT via the PUBLIC API using the
+                space's ntn_ key (the app-API CRDT create_page is broken —
+                CrdtAssertionError text_slice_block_mapping). Saved to
+                session[pages].
+    instruct    assign a page as the AGENT INSTRUCTION (prompt table set
+                prompt_type=instruction + space_view.settings
+                agent_personalization_settings.context_page_id — the TWO-op
+                shape from HAR call #36).
+    skill       assign a page as an AGENT SKILL (prompt table set
+                prompt_type=skill, HAR call #54). Skills auto-surface to
+                the agent (Skills V2) — it reads + applies + CITES the page.
+    chat        full options: --chat-model (codename), --chat-effort,
+                --chat-context-page (context_page_id: the page becomes the
+                thread's persistent_instructions_page — the agent READS
+                it), --chat-block (blockId variant), --chat-thread
+                (follow-up turn: createThread=false, isPartialTranscript).
+
+Streaming protocol (decoded from live NDJSON): patch-start carries the
+initial records; `a /s/-` appends records (agent-inference value parts are
+typed "thinking" = CoT vs "text" = user-visible); `x /s/N/value/K/content`
+APPENDS text chunks; terminal `a /s/N/model|inputTokens|...` carry the
+model metadata; a final record-map line carries last_turn_outcome.
+
 Routing (--route):
     auto      direct first; on IP-reputation blocks (400 UserValidationError /
               "... not allowed", 403) the SAME call is retried through Zenrows
@@ -91,7 +118,8 @@ TOKEN_TYPE_MAP = {  # captured_tokens.token_type -> session field
 CHAT_CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            "notion_chat_config.json")
 
-STEP_ORDER = ("resume", "workspace", "onboarding", "trial", "apikey", "chat")
+STEP_ORDER = ("resume", "workspace", "onboarding", "trial", "apikey",
+              "models", "page", "instruct", "skill", "chat")
 
 
 # --------------------------------------------------------------------------
@@ -632,23 +660,114 @@ def step_apikey(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
 
 
 def _extract_agent_text(lines) -> str:
-    """Pull the AI reply out of the NDJSON patch stream: patch ops append
-    {type: "agent-inference", value: [{type: "text", content: …}]}."""
-    texts = []
+    """Pull the AI reply out of the NDJSON patch stream (legacy shim)."""
+    return parse_chat_stream(lines, "", "")["reply"]
+
+
+def parse_chat_stream(lines, tid: str, used: str) -> dict:
+    """Stateful NDJSON patch applier — reconstructs the chat result from
+    the runInferenceTranscript patch stream. Live-protocol (2026-08-25):
+
+      patch-start data.s  : initial records (agent-instruction-state, ...)
+      a  /s/-             : append record
+      a  /s/N/value/-     : append a VALUE PART {type, content, ...}
+                            ("thinking" = chain-of-thought, "text" = the
+                            user-visible reply — MUST be separated)
+      x  /s/N/value/K/content : APPEND a text chunk to part K (o="x" is
+                            extend, NOT replace)
+      a  /s/N/model|inputTokens|outputTokens|... : terminal metadata
+      record-map          : final thread record (last_turn_outcome)
+    """
+    records: list[dict] = []
+    tools, outcome = [], {}
+
+    def _mkrec(v: dict) -> dict:
+        return {"type": (v or {}).get("type", ""),
+                "parts": [dict(pp) for pp in (v or {}).get("value") or []
+                          if isinstance(pp, dict)],
+                "meta": {k: vv for k, vv in (v or {}).items()
+                         if k not in ("value", "type", "id")},
+                "id": (v or {}).get("id", "")}
+
     for line in lines:
         try:
-            obj = json.loads(line)
-        except Exception:
+            obj = json.loads(line if isinstance(line, str)
+                             else line.decode("utf-8", "replace"))
+        except Exception:                                    # noqa: BLE001
             continue
-        if obj.get("type") != "patch":
+        t = obj.get("type")
+        if t == "patch-start":
+            for rec in (obj.get("data") or {}).get("s") or []:
+                records.append(_mkrec(rec))
+            continue
+        if t == "record-map":
+            for rec in (obj.get("recordMap") or {}).get("thread", {}).values():
+                v = rec.get("value") or {}
+                inner = v.get("value") if isinstance(v, dict) else None
+                data = (inner or v).get("data") or {}
+                if data.get("last_turn_outcome"):
+                    outcome = data["last_turn_outcome"]
+            continue
+        if t != "patch":
             continue
         for op in obj.get("v") or []:
-            inner = op.get("v") if isinstance(op, dict) else None
-            if isinstance(inner, dict) and inner.get("type") == "agent-inference":
-                for part in inner.get("value") or []:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        texts.append(part.get("content", ""))
-    return "".join(texts).strip()
+            if not isinstance(op, dict):
+                continue
+            o, p, v = op.get("o"), op.get("p"), op.get("v")
+            if not isinstance(p, str) or not p.startswith("/s/"):
+                continue
+            if p == "/s/-" and o == "a":
+                records.append(_mkrec(v or {}))
+                continue
+            parts = p.strip("/").split("/")
+            try:
+                n = int(parts[1])
+            except (ValueError, IndexError):
+                continue
+            while len(records) <= n:
+                records.append({"type": "", "parts": [], "meta": {}, "id": ""})
+            rec = records[n]
+            if len(parts) == 3 and o == "a":              # /s/N/<field>
+                rec["meta"][parts[2]] = v
+            elif (len(parts) == 4 and parts[2] == "value" and parts[3] == "-"
+                    and o == "a"):                        # append value part
+                if isinstance(v, dict):
+                    rec["parts"].append(dict(v))
+            elif (len(parts) == 5 and parts[2] == "value"
+                    and parts[4] == "content"):           # extend content
+                try:
+                    k = int(parts[3])
+                except ValueError:
+                    continue
+                while len(rec["parts"]) <= k:
+                    rec["parts"].append({"type": "", "content": ""})
+                rec["parts"][k]["content"] = \
+                    rec["parts"][k].get("content", "") + (v or "")
+
+    reply_parts, thinking, models, tokens = [], [], [], {}
+    for rec in records:
+        if rec["type"] == "agent-inference":
+            for part in rec["parts"]:
+                if part.get("type") == "text":
+                    reply_parts.append(part.get("content", ""))
+                elif part.get("type") == "thinking":
+                    thinking.append(part.get("content", ""))
+            if rec["meta"].get("model"):
+                models.append(rec["meta"]["model"])
+            for k in ("inputTokens", "outputTokens", "cachedTokensRead",
+                      "maxContextTokens"):
+                if rec["meta"].get(k) is not None:
+                    tokens[k] = rec["meta"][k]
+        elif rec["type"] == "agent-tool-result":
+            res = rec["meta"].get("result") or {}
+            tools.append({"headerLabel": res.get("headerLabel", ""),
+                          "output": str(res.get("output", ""))[:160]})
+    return {"threadId": tid, "route": used, "events": len(lines),
+            "reply": "".join(reply_parts).strip(),
+            "thinking": "".join(thinking).strip()[:400],
+            "model": models[-1] if models else "",
+            "tools": tools, "tokens": tokens,
+            "outcome": outcome}
 
 
 def _chat_config() -> dict:
@@ -660,22 +779,216 @@ def _chat_config() -> dict:
         return json.load(f)
 
 
+def step_models(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
+    """getAvailableModels + getAiPickableModels — the EXACT model list.
+
+    Live finding (business-trial space, 2026-08-25): 31 available models
+    with per-model supportedReasoningEfforts + defaults; 92 pickable
+    codenames in total; restricted entries carry disabledReason (e.g.
+    acai-budino "Fable 5": trial_not_allowed). Saved to session[models].
+    """
+    sid = (sess.get("space") or {}).get("id")
+
+    def fn_avail(c):
+        return c.post("/api/v3/getAvailableModels",
+                      body={"spaceId": sid}, referer="/") or {}
+
+    def fn_pick(c):
+        return c.post("/api/v3/getAiPickableModels", body={}, referer="/") or {}
+    avail, used = routed(R, sess, route, zkey, fn_avail)
+    pick, _ = routed(R, sess, route, zkey, fn_pick)
+    models = []
+    for m in avail.get("models") or []:
+        cfg = m.get("modelConfiguration") or {}
+        models.append({
+            "codename": m.get("model"), "name": m.get("modelMessage"),
+            "family": m.get("modelFamily"), "group": m.get("displayGroup"),
+            "efforts": cfg.get("supportedReasoningEfforts"),
+            "defaultEffort": cfg.get("defaultReasoningEffort"),
+            "disabled": bool(m.get("isDisabled"))})
+    restricted = [{"codename": r.get("codename"), "name": r.get("modelMessage"),
+                   "reason": r.get("disabledReason")}
+                  for r in avail.get("restrictedAccessModelsInPickerConfig") or []]
+    sess["models"] = {"available": models, "nPickable": len(pick.get("models") or []),
+                      "restricted": restricted}
+    return {"route": used, "available": len(models),
+            "pickable": len(pick.get("models") or []),
+            "restricted": restricted,
+            "table": [f"{m['codename']} = {m['name']} "
+                      f"({m['family']}, eff={m['efforts']})"
+                      for m in models[:8]] + ["…"]}
+
+
+# --------------------------------------------------------------------------
+# PUBLIC API (api.notion.com/v1) — page creation with the ntn_ key
+# --------------------------------------------------------------------------
+def _space_api_key(sess: dict) -> str:
+    sid = (sess.get("space") or {}).get("id")
+    per_space = (sess.get("apiKeys") or {}).get(sid) or {}
+    tok = per_space.get("token") or (sess.get("apiKey") or {}).get("token")
+    if not tok:
+        sys.exit("no ntn_ key for the active space — run --step apikey first")
+    return tok
+
+
+def _pub_api(method: str, path: str, token: str, body=None) -> tuple[int, dict]:
+    req = urllib.request.Request(
+        f"https://api.notion.com/v1{path}",
+        data=_json_dumps(body).encode() if body is not None else None,
+        headers={"Authorization": f"Bearer {token}",
+                 "Notion-Version": "2022-06-28",
+                 "Content-Type": "application/json"}, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read().decode("utf-8", "replace") or "{}")
+
+
+def step_page(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
+    """Create a page WITH CONTENT via the PUBLIC API (ntn_ key).
+
+    The app-API CRDT create_page is broken server-side (CrdtAssertionError
+    "New block should have one text_slice_block_mapping record" — the
+    server now demands the new insertText CRDT protocol); the PUBLIC API
+    creates pages + paragraph blocks cleanly and the chat agent reads
+    them identically (live-verified: MARSHMALLOW secret-word test).
+    """
+    tok = _space_api_key(sess)
+    title = args.page_title
+    children = [{"object": "block", "type": "paragraph", "paragraph": {
+        "rich_text": [{"text": {"content": args.page_content}}]}}] \
+        if args.page_content else []
+    st, page = _pub_api("POST", "/pages", tok, {
+        "parent": {"type": "workspace", "workspace": True},
+        "properties": {"title": [{"text": {"content": title}}]},
+        "children": children})
+    if st != 200:
+        return {"error": f"HTTP {st}", "detail": json.dumps(page)[:200]}
+    entry = {"id": page["id"], "title": title, "url": page.get("url", ""),
+             "createdAt": time.time()}
+    sess.setdefault("pages", []).append(entry)
+    return {"ok": True, "page": entry}
+
+
+def _assign_prompt(R: Ref, sess: dict, route: str, zkey: str,
+                   page_id: str, prompt_type: str) -> dict:
+    """prompt-table assignment — HAR call #36/#54 ground truth.
+
+    instruction ALSO updates space_view.settings
+    agent_personalization_settings.context_page_id (the second op the
+    web client sends with setAsInstruction.on — without it the page never
+    becomes the agent's personalization context).
+    """
+    sid = (sess.get("space") or {}).get("id")
+    svid = (sess.get("space") or {}).get("viewId")
+    pid = str(uuid.uuid4())
+    now_ms = int(time.time() * 1000)
+    ops = [{
+        "pointer": {"table": "prompt", "id": pid, "spaceId": sid},
+        "path": [], "command": "set",
+        "args": {"id": pid, "space_id": sid, "parent_id": page_id,
+                 "parent_table": "block", "version": 1,
+                 "created_time": now_ms, "alive": True,
+                 "prompt_type": prompt_type}}]
+    if prompt_type == "instruction":
+        ops.append({
+            "pointer": {"table": "space_view", "id": svid, "spaceId": sid},
+            "path": ["settings"], "command": "update",
+            "args": {"agent_personalization_settings":
+                     {"context_page_id": page_id}}})
+    body = {"requestId": str(uuid.uuid4()), "transactions": [{
+        "id": str(uuid.uuid4()), "spaceId": sid,
+        "debug": {"userAction": "setAsInstruction.on" if
+                  prompt_type == "instruction" else
+                  "topbarMoreActionRegistry.setAsAiSkill",
+                  "clientCommitTimeMs": now_ms},
+        "operations": ops}]}
+
+    def fn(c):
+        return c.post("/api/v3/saveTransactionsFanout", body=body,
+                      referer="/") or {}
+    raw, used = routed(R, sess, route, zkey, fn)
+    return {"promptId": pid, "promptType": prompt_type, "pageId": page_id,
+            "route": used, "ok": True}
+
+
+def _resolve_page_arg(sess: dict, args) -> str:
+    """--page-id, or the Nth-latest session page, or the latest page."""
+    if getattr(args, "page_id", None):
+        return args.page_id
+    pages = sess.get("pages") or []
+    if not pages:
+        sys.exit("no page id — pass --page-id <uuid> or run --step page first")
+    return pages[-1]["id"]
+
+
+def step_instruct(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
+    page_id = _resolve_page_arg(sess, args)
+    res = _assign_prompt(R, sess, route, zkey, page_id, "instruction")
+    sess.setdefault("prompts", {})[page_id] = res
+    sess["instructionPageId"] = page_id
+    return res
+
+
+def step_skill(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
+    page_id = _resolve_page_arg(sess, args)
+    res = _assign_prompt(R, sess, route, zkey, page_id, "skill")
+    sess.setdefault("prompts", {})[page_id] = res
+    sess.setdefault("skillPageIds", []).append(page_id)
+    return res
+
+
 def step_chat(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
+    """runInferenceTranscript — full chat support.
+
+    Live-verified capabilities (2026-08-25):
+      --chat-model <codename>   config.model + modelFromUser=true
+      --chat-effort <level>     config.reasoningEffort (per-model list:
+                                --step models)
+      --chat-context-page <id>  context.context_page_id — the page becomes
+                                the thread's persistent_instructions_page;
+                                the agent READS it (MARSHMALLOW test) and
+                                FOLLOWS directives on it (PINEAPPLE test)
+      --chat-block <id>         context.blockId — alternative page-context
+                                shape (also live-verified)
+      --chat-thread <threadId>  follow-up turn: createThread=false,
+                                isPartialTranscript=true (instructions on
+                                the page PERSIST across turns; ~97% of the
+                                prompt is cache-hit on the 2nd turn)
+    """
     sp = sess.get("space") or {}
     sid, svid = sp.get("id"), sp.get("viewId")
     if not sid:
         return {"error": "no space id in session — run --step resume first"}
     uid = sess["userId"]
     now_local = datetime.now().astimezone().isoformat(timespec="milliseconds")
-    tid = str(uuid.uuid4())
+    tid = getattr(args, "chat_thread", None) or str(uuid.uuid4())
+    follow_up = bool(getattr(args, "chat_thread", None))
+    cfg = _chat_config()
+    if getattr(args, "chat_model", None):
+        cfg["model"] = args.chat_model
+        cfg["modelFromUser"] = True
+        if getattr(args, "chat_effort", None):
+            cfg["reasoningEffort"] = args.chat_effort
+    ctx = {
+        "timezone": datetime.now().astimezone().tzname() or "UTC",
+        "userName": "Onboard",
+        "userId": uid, "userEmail": sess.get("email", ""),
+        "spaceName": sp.get("name") or "Notion Workspace",
+        "spaceId": sid, "spaceViewId": svid or "",
+        "currentDatetime": now_local, "surface": "ai_module"}
+    if getattr(args, "chat_context_page", None):
+        ctx["context_page_id"] = args.chat_context_page
+    elif sess.get("instructionPageId"):
+        # agent personalization: the web client sends the instruction page
+        # as context_page_id on every chat (HAR calls #55/#63/#65)
+        ctx["context_page_id"] = sess["instructionPageId"]
+    if getattr(args, "chat_block", None):
+        ctx["blockId"] = args.chat_block
     transcript = [
-        {"id": str(uuid.uuid4()), "type": "config", "value": _chat_config()},
-        {"id": str(uuid.uuid4()), "type": "context", "value": {
-            "timezone": datetime.now().astimezone().tzname() or "UTC",
-            "userId": uid, "userEmail": sess.get("email", ""),
-            "spaceName": sp.get("name") or "Notion Workspace",
-            "spaceId": sid, "spaceViewId": svid or "",
-            "currentDatetime": now_local, "surface": "ai_module"}},
+        {"id": str(uuid.uuid4()), "type": "config", "value": cfg},
+        {"id": str(uuid.uuid4()), "type": "context", "value": ctx},
         {"id": str(uuid.uuid4()), "type": "user", "userId": uid,
          "value": [[args.prompt]], "createdAt": now_local},
     ]
@@ -683,13 +996,13 @@ def step_chat(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
         "traceId": str(uuid.uuid4()), "spaceId": sid,
         "transcript": transcript, "threadId": tid,
         "threadParentPointer": {"table": "space", "id": sid, "spaceId": sid},
-        "createThread": True,
+        "createThread": not follow_up,
         "debugOverrides": {"emitAgentSearchExtractedResults": True,
                            "cachedInferences": {}, "annotationInferences": {},
                            "emitInferences": False},
-        "generateTitle": True, "saveAllThreadOperations": True,
+        "generateTitle": not follow_up, "saveAllThreadOperations": True,
         "setUnreadState": True, "createdSource": "ai_module",
-        "threadType": "workflow", "isPartialTranscript": False,
+        "threadType": "workflow", "isPartialTranscript": follow_up,
         "asPatchResponse": True, "patchResponseVersion": 2,
         "isUserInAnySalesAssistedSpace": False, "isSpaceSalesAssisted": False,
         "supportsCustomAgentNudgeTranscriptStep": True,
@@ -700,36 +1013,99 @@ def step_chat(R: Ref, sess: dict, route: str, zkey: str, args) -> dict:
                              referer="/", timeout=150)
     resp, used = routed(R, sess, route, zkey, fn)
     lines = [l for l in resp.iter_lines(decode_unicode=True) if l]
-    reply = _extract_agent_text(lines)
+    parsed = parse_chat_stream(lines, tid, used)
+    reply = parsed["reply"]
 
-    # outcome check (best-effort; the thread record settles a few seconds later)
-    time.sleep(4)
-    outcome = ""
-    try:
-        def fn2(c):
-            return c.post("/api/v3/getInferenceTranscriptsForUser",
-                          body={"threadParentPointer": {"table": "space",
-                                                        "id": sid, "spaceId": sid},
-                                "limit": 3, "includeWriterChats": False},
-                          referer="/") or {}
-        raw2, _ = routed(R, sess, route, zkey, fn2)
-        for row in ((raw2.get("recordMap") or {}).get("thread") or {}).values():
-            v = ((row.get("value") or {}).get("value") or {})
-            if v.get("id") == tid:
-                outcome = json.dumps((v.get("data") or {})
-                                     .get("last_turn_outcome") or {})
-                break
-    except Exception as e:                              # noqa: BLE001
-        outcome = f"(outcome lookup failed: {e})"
+    # if the stream closed before the final text landed, fall back to the
+    # settled thread record (syncRecordValuesSpaceInitial — plain JSON)
+    if not reply and not follow_up:
+        time.sleep(4)
+        reply = _fetch_thread_reply(R, sess, route, zkey, tid) or reply
 
-    sess.setdefault("chats", []).append({
+    outcome = parsed["outcome"] or {}
+    if not outcome:
+        time.sleep(3)
+        outcome = _fetch_thread_outcome(R, sess, route, zkey, tid) or {}
+
+    rec = {
         "threadId": tid, "prompt": args.prompt, "reply": reply,
-        "events": len(lines), "outcome": outcome, "ts": time.time(),
-        "route": used, "spaceId": sid, "spaceName": sp.get("name", "")})
-    ok = bool(reply) and '"completed"' in outcome
-    return {"ok": ok, "threadId": tid, "route": used, "events": len(lines),
+        "model": parsed["model"], "tokens": parsed["tokens"],
+        "tools": [t.get("headerLabel") for t in parsed["tools"]][:6],
+        "outcome": outcome, "ts": time.time(),
+        "route": used, "spaceId": sid, "spaceName": sp.get("name", ""),
+        "contextPageId": ctx.get("context_page_id", "")}
+    sess.setdefault("chats", []).append(rec)
+    ok = bool(reply) and outcome.get("status") == "completed"
+    return {"ok": ok, "threadId": tid, "route": used,
+            "events": len(lines), "model": parsed["model"] or "(default)",
             "reply": reply or "(no text extracted)",
-            "outcome": outcome or "(unknown)"}
+            "tokens": parsed["tokens"],
+            "outcome": outcome or {"status": "(unknown)"}}
+
+
+def _fetch_thread_record(R: Ref, sess: dict, route: str, zkey: str,
+                         tid: str) -> dict:
+    sid = (sess.get("space") or {}).get("id")
+
+    def fn(c):
+        return c.post("/api/v3/syncRecordValuesSpaceInitial",
+                      body={"requests": [
+                          {"pointer": {"table": "thread", "id": tid,
+                                       "spaceId": sid}, "version": -1}],
+                          "spacePointer": {"table": "space", "id": sid,
+                                           "spaceId": sid}},
+                      referer="/") or {}
+    raw, _ = routed(R, sess, route, zkey, fn)
+    rec = ((raw.get("recordMap") or {}).get("thread") or {}).get(tid) or {}
+    v = rec.get("value") or {}
+    inner = v.get("value") if isinstance(v, dict) else None
+    return inner if isinstance(inner, dict) else (v if isinstance(v, dict) else {})
+
+
+def _fetch_thread_outcome(R: Ref, sess: dict, route: str, zkey: str,
+                          tid: str) -> dict:
+    try:
+        rec = _fetch_thread_record(R, sess, route, zkey, tid)
+        return (rec.get("data") or {}).get("last_turn_outcome") or {}
+    except Exception:                                        # noqa: BLE001
+        return {}
+
+
+def _fetch_thread_reply(R: Ref, sess: dict, route: str, zkey: str,
+                        tid: str) -> str:
+    """Post-completion fallback: thread -> message ids -> thread_message
+    records -> concat the text parts of the LAST agent-inference."""
+    try:
+        sid = (sess.get("space") or {}).get("id")
+        rec = _fetch_thread_record(R, sess, route, zkey, tid)
+        mids = rec.get("messages") or []
+        if not mids:
+            return ""
+
+        def fn(c):
+            return c.post("/api/v3/syncRecordValuesSpaceInitial",
+                          body={"requests": [
+                              {"pointer": {"table": "thread_message", "id": m,
+                                           "spaceId": sid}, "version": -1}
+                              for m in mids],
+                              "spacePointer": {"table": "space", "id": sid,
+                                               "spaceId": sid}},
+                          referer="/") or {}
+        raw, _ = routed(R, sess, route, zkey, fn)
+        tms = (raw.get("recordMap") or {}).get("thread_message") or {}
+        texts = []
+        for m in mids:
+            vv = (tms.get(m) or {}).get("value") or {}
+            step_rec = vv.get("value") if isinstance(vv, dict) else {}
+            step = (step_rec or {}).get("step") or {}
+            if step.get("type") == "agent-inference" \
+                    and isinstance(step.get("value"), list):
+                texts.append("".join(
+                    p.get("content", "") for p in step["value"]
+                    if isinstance(p, dict) and p.get("type") == "text"))
+        return "".join(texts).strip()
+    except Exception:                                        # noqa: BLE001
+        return ""
 
 
 # --------------------------------------------------------------------------
@@ -780,6 +1156,27 @@ def main() -> None:
     p.add_argument("--api-key-expiration", default="1_year",
                    choices=("1_year", "90_days", "30_days", "7_days", "no_expiry"))
     p.add_argument("--prompt", default="What is 2+2? Answer with just the number.")
+    p.add_argument("--page-title", default="Automation Page",
+                   help="--step page: title of the page to create")
+    p.add_argument("--page-content", default="",
+                   help="--step page: paragraph content for the page")
+    p.add_argument("--page-id", metavar="UUID",
+                   help="--step instruct/skill: target an explicit page id "
+                        "(default: the latest page created via --step page)")
+    p.add_argument("--chat-model", metavar="CODENAME",
+                   help="--step chat: model codename (list: --step models; "
+                        "e.g. orange-mousse, agave-flan, angel-cake-high)")
+    p.add_argument("--chat-effort", metavar="LEVEL",
+                   choices=("none", "minimal", "low", "medium", "high",
+                            "xhigh", "max"),
+                   help="--step chat: reasoningEffort for the chosen model")
+    p.add_argument("--chat-context-page", metavar="UUID",
+                   help="--step chat: chat ON this page (context_page_id) — "
+                        "the agent reads it and follows its directives")
+    p.add_argument("--chat-block", metavar="UUID",
+                   help="--step chat: blockId page-attachment variant")
+    p.add_argument("--chat-thread", metavar="THREAD_ID",
+                   help="--step chat: follow-up turn on an existing thread")
     p.add_argument("--refresh-config", metavar="GT_CHAT_JSON",
                    help="refresh backend/notion_chat_config.json from a freshly "
                         "captured ground-truth chat request, then exit")
@@ -825,7 +1222,9 @@ def main() -> None:
 
     runners = {"resume": step_resume, "workspace": step_workspace,
                "onboarding": step_onboarding, "trial": step_trial,
-               "apikey": step_apikey, "chat": step_chat}
+               "apikey": step_apikey, "models": step_models,
+               "page": step_page, "instruct": step_instruct,
+               "skill": step_skill, "chat": step_chat}
     summary = {}
     for st in steps:
         print(f"\n=== step: {st} (route={args.route}) ===")

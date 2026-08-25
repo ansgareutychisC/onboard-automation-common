@@ -1,0 +1,1084 @@
+{
+ "capturedAt": "2026-08-25",
+ "pickable": {
+  "models": [
+   "openai-gpt-4o",
+   "openai-gpt-4o-mini",
+   "openai-turbo",
+   "openai-gpt-4.1",
+   "openai-gpt-4.1-mini",
+   "openai-gpt-4.1-nano",
+   "openai-gpt-5-mini",
+   "openai-gpt-5-nano",
+   "openai-turbo-thinking",
+   "openai-turbo-minimal-thinking",
+   "openai-turbo-10",
+   "openai-turbo-8",
+   "orange-tart",
+   "opal-quince",
+   "opal-quince-medium",
+   "opal-quince-high",
+   "oatmeal-cookie",
+   "oatmeal-cookie-medium-thinking",
+   "oatmeal-cookie-high-thinking",
+   "oval-kumquat",
+   "oval-kumquat-medium",
+   "oval-kumquat-high",
+   "oregon-grape-low",
+   "oregon-grape-medium",
+   "oregon-grape-high",
+   "otaheite-apple-low",
+   "otaheite-apple-medium",
+   "otaheite-apple-high",
+   "orange-mousse",
+   "orchid-muffin",
+   "olive-jellyroll",
+   "anthropic-sonnet-alt",
+   "anthropic-sonnet-alt-no-thinking",
+   "anthropic-sonnet-alt-thinking",
+   "anthropic-haiku-4.5",
+   "anthropic-haiku-4.5-thinking",
+   "almond-croissant-high",
+   "almond-croissant-low",
+   "apple-danish",
+   "ambrosia-tart-high",
+   "apricot-sorbet-x-high",
+   "apricot-sorbet-max",
+   "apricot-sorbet-high",
+   "apricot-sorbet-medium",
+   "apricot-sorbet-low",
+   "acai-budino-high",
+   "agave-flan",
+   "avocado-froyo-medium",
+   "angel-cake-high",
+   "angel-cake-medium",
+   "angel-cake-low",
+   "angel-cake-none",
+   "vertex-gemini-2.5-pro",
+   "vertex-gemini-2.5-flash",
+   "gemini-pro",
+   "gemini-flash",
+   "gingerbread",
+   "vertex-gemini-3.5-flash",
+   "vertex-gemini-3.6-flash",
+   "grapefruit-zeppole",
+   "galette-medium-thinking",
+   "fireworks-llama3.1-405b",
+   "fireworks-llama3.1-70b",
+   "fireworks-qwen3-14b-dedicated",
+   "fireworks-qwen3-8b-dedicated",
+   "fireworks-llama3.1-8b",
+   "fireworks-ft-router-102",
+   "fireworks-kimi-k2.6",
+   "fireworks-kimi-k2.7",
+   "fireworks-kimi-k3",
+   "fireworks-gpt-oss-120b",
+   "fireworks-llama-8b-finetune-v07-p50-cru6bgc4",
+   "cinder-kite",
+   "xigua-mochi-medium",
+   "xinomavro-cake",
+   "strawberry-whoopiepie",
+   "soursop-shortcake",
+   "bedrock-anthropic-sonnet-3.7",
+   "baseten-qwen3.6-27b-meeting-summary-v2",
+   "baseten-deepseek-v4-pro",
+   "baseten-deepseek-v4-flash",
+   "baseten-glm-5.2",
+   "custom-openai-slot-1",
+   "custom-openai-slot-2",
+   "custom-openai-slot-3",
+   "custom-openai-slot-4",
+   "custom-openai-slot-5",
+   "custom-anthropic-slot-1",
+   "custom-anthropic-slot-2",
+   "custom-anthropic-slot-3",
+   "custom-anthropic-slot-4",
+   "custom-anthropic-slot-5"
+  ]
+ },
+ "available": {
+  "restrictedGeoPolicyApplied": false,
+  "restrictedAccessModelsInPickerConfig": [
+   {
+    "codename": "acai-budino",
+    "modelMessage": "Fable 5",
+    "modelFamily": "anthropic",
+    "disabledReason": "trial_not_allowed"
+   }
+  ],
+  "models": [
+   {
+    "model": "soursop-shortcake",
+    "modelMessage": "Grok 4.6",
+    "modelFamily": "xai",
+    "modelProvider": "xai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "soursop-shortcake",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "soursop-shortcake",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "soursop-shortcake",
+     "beta": true
+    }
+   },
+   {
+    "model": "olive-jellyroll",
+    "modelMessage": "GPT-5.6 Luna",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 3,
+     "cost": 2
+    },
+    "workflow": {
+     "finalModelName": "olive-jellyroll",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "olive-jellyroll",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "olive-jellyroll",
+     "beta": true
+    }
+   },
+   {
+    "model": "orchid-muffin",
+    "modelMessage": "GPT-5.6 Terra",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 4,
+     "intelligence": 4,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "orchid-muffin",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "orchid-muffin",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "orchid-muffin",
+     "beta": true
+    }
+   },
+   {
+    "model": "orange-mousse",
+    "modelMessage": "GPT-5.6 Sol",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "orange-mousse",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "orange-mousse",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "orange-mousse",
+     "beta": true
+    }
+   },
+   {
+    "model": "oatmeal-cookie",
+    "modelMessage": "GPT-5.2",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 4,
+     "intelligence": 4,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "oatmeal-cookie",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "oatmeal-cookie",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "oatmeal-cookie",
+     "beta": true
+    }
+   },
+   {
+    "model": "oval-kumquat-medium",
+    "modelMessage": "GPT-5.4",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 4,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "oval-kumquat-medium",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "oval-kumquat-medium",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "oval-kumquat-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "opal-quince-medium",
+    "modelMessage": "GPT-5.5",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 4,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "opal-quince-medium",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "opal-quince-medium",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "opal-quince-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "vertex-gemini-3.5-flash",
+    "modelMessage": "Gemini 3.5 Flash",
+    "modelFamily": "gemini",
+    "modelProvider": "gemini",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "low"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 3,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "vertex-gemini-3.5-flash",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "vertex-gemini-3.5-flash",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "vertex-gemini-3.5-flash",
+     "beta": true
+    }
+   },
+   {
+    "model": "vertex-gemini-3.6-flash",
+    "modelMessage": "Gemini 3.6 Flash",
+    "modelFamily": "gemini",
+    "modelProvider": "gemini",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "minimal",
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 3,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "vertex-gemini-3.6-flash",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "vertex-gemini-3.6-flash",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "vertex-gemini-3.6-flash",
+     "beta": true
+    }
+   },
+   {
+    "model": "grapefruit-zeppole",
+    "modelMessage": "Gemini 3.7 Flash",
+    "modelFamily": "gemini",
+    "modelProvider": "gemini",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 3,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "grapefruit-zeppole",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "grapefruit-zeppole",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "grapefruit-zeppole",
+     "beta": true
+    }
+   },
+   {
+    "model": "almond-croissant-low",
+    "modelMessage": "Sonnet 4.6",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "low"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "almond-croissant-low",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "almond-croissant-low",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "almond-croissant-low",
+     "beta": true
+    }
+   },
+   {
+    "model": "angel-cake-high",
+    "modelMessage": "Sonnet 5",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "angel-cake-high",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "angel-cake-high",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "angel-cake-high",
+     "beta": true
+    }
+   },
+   {
+    "model": "avocado-froyo-medium",
+    "modelMessage": "Opus 4.6",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 2,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "customAgent": {
+     "finalModelName": "avocado-froyo-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "apricot-sorbet-high",
+    "modelMessage": "Opus 4.7",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "high"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 2,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "apricot-sorbet-high",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "apricot-sorbet-high",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "apricot-sorbet-high",
+     "beta": true
+    }
+   },
+   {
+    "model": "ambrosia-tart-high",
+    "modelMessage": "Opus 4.8",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 2,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "ambrosia-tart-high",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "ambrosia-tart-high",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "ambrosia-tart-high",
+     "beta": true
+    }
+   },
+   {
+    "model": "agave-flan",
+    "modelMessage": "Opus 5",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "isApproachingRateLimit": false,
+    "modelCardAttributes": {
+     "speed": 2,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "agave-flan",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "agave-flan",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "agave-flan",
+     "beta": true
+    }
+   },
+   {
+    "model": "oregon-grape-medium",
+    "modelMessage": "GPT-5.4 Mini",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 2,
+     "cost": 2
+    },
+    "customAgent": {
+     "finalModelName": "oregon-grape-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "otaheite-apple-medium",
+    "modelMessage": "GPT-5.4 Nano",
+    "modelFamily": "openai",
+    "modelProvider": "openai",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "medium"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 1,
+     "cost": 1
+    },
+    "customAgent": {
+     "finalModelName": "otaheite-apple-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "fireworks-kimi-k2.6",
+    "modelMessage": "Kimi K2.6",
+    "modelFamily": "mystery",
+    "modelProvider": "kimi",
+    "displayGroup": "intelligent",
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 4,
+     "cost": 2
+    },
+    "workflow": {
+     "finalModelName": "fireworks-kimi-k2.6",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "fireworks-kimi-k2.6",
+     "beta": true
+    }
+   },
+   {
+    "model": "fireworks-kimi-k2.7",
+    "modelMessage": "Kimi K2.7 Code",
+    "modelFamily": "mystery",
+    "modelProvider": "kimi",
+    "displayGroup": "intelligent",
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 4,
+     "cost": 2
+    },
+    "workflow": {
+     "finalModelName": "fireworks-kimi-k2.7",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "fireworks-kimi-k2.7",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "fireworks-kimi-k2.7",
+     "beta": true
+    }
+   },
+   {
+    "model": "fireworks-kimi-k3",
+    "modelMessage": "Kimi K3",
+    "modelFamily": "mystery",
+    "modelProvider": "kimi",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "max"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 4,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "fireworks-kimi-k3",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "fireworks-kimi-k3",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "fireworks-kimi-k3",
+     "beta": true
+    }
+   },
+   {
+    "model": "baseten-deepseek-v4-pro",
+    "modelMessage": "DeepSeek V4 Pro",
+    "modelFamily": "mystery",
+    "modelProvider": "deepseek",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "max",
+      "xhigh"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "baseten-deepseek-v4-pro",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "baseten-deepseek-v4-pro",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "baseten-deepseek-v4-pro",
+     "beta": true
+    }
+   },
+   {
+    "model": "baseten-deepseek-v4-flash",
+    "modelMessage": "DeepSeek V4 Flash",
+    "modelFamily": "mystery",
+    "modelProvider": "deepseek",
+    "displayGroup": "fast",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "minimal",
+      "low",
+      "medium",
+      "high",
+      "xhigh"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 4,
+     "cost": 1
+    },
+    "workflow": {
+     "finalModelName": "baseten-deepseek-v4-flash",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "baseten-deepseek-v4-flash",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "baseten-deepseek-v4-flash",
+     "beta": true
+    }
+   },
+   {
+    "model": "baseten-glm-5.2",
+    "modelMessage": "GLM 5.2",
+    "modelFamily": "mystery",
+    "modelProvider": "glm",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "none",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 3
+    },
+    "workflow": {
+     "finalModelName": "baseten-glm-5.2",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "baseten-glm-5.2",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "baseten-glm-5.2",
+     "beta": true
+    }
+   },
+   {
+    "model": "xigua-mochi-medium",
+    "modelMessage": "Grok 4.3",
+    "modelFamily": "xai",
+    "modelProvider": "xai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "xigua-mochi-medium",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "xigua-mochi-medium",
+     "beta": true
+    }
+   },
+   {
+    "model": "strawberry-whoopiepie",
+    "modelMessage": "Grok 4.5",
+    "modelFamily": "xai",
+    "modelProvider": "xai",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "strawberry-whoopiepie",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "strawberry-whoopiepie",
+     "beta": true
+    }
+   },
+   {
+    "model": "xinomavro-cake",
+    "modelMessage": "Grok Build 0.1",
+    "modelFamily": "xai",
+    "modelProvider": "xai",
+    "displayGroup": "intelligent",
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 3,
+     "intelligence": 5,
+     "cost": 4
+    },
+    "workflow": {
+     "finalModelName": "xinomavro-cake",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "xinomavro-cake",
+     "beta": true
+    }
+   },
+   {
+    "model": "galette-medium-thinking",
+    "modelMessage": "Gemini 3.1 Pro",
+    "modelFamily": "gemini",
+    "modelProvider": "gemini",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium"
+     ],
+     "defaultReasoningEffort": "medium"
+    },
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "workflow": {
+     "finalModelName": "galette-medium-thinking",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "galette-medium-thinking",
+     "beta": true
+    }
+   },
+   {
+    "model": "anthropic-haiku-4.5",
+    "modelMessage": "Haiku 4.5",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "fast",
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 2,
+     "cost": 2
+    },
+    "customAgent": {
+     "finalModelName": "anthropic-haiku-4.5",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "anthropic-haiku-4.5",
+     "beta": true
+    }
+   },
+   {
+    "model": "gingerbread",
+    "modelMessage": "Gemini 3 Flash",
+    "modelFamily": "gemini",
+    "modelProvider": "gemini",
+    "displayGroup": "fast",
+    "isDisabled": false,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "modelCardAttributes": {
+     "speed": 5,
+     "intelligence": 2,
+     "cost": 2
+    },
+    "customAgent": {
+     "finalModelName": "gingerbread",
+     "beta": true
+    }
+   },
+   {
+    "model": "acai-budino-high",
+    "modelMessage": "Fable 5",
+    "modelFamily": "anthropic",
+    "modelProvider": "anthropic",
+    "displayGroup": "intelligent",
+    "modelConfiguration": {
+     "supportedReasoningEfforts": [
+      "low",
+      "medium",
+      "high",
+      "max"
+     ],
+     "defaultReasoningEffort": "high"
+    },
+    "isDisabled": true,
+    "isDisabledOnlyByDisasterRecovery": false,
+    "disabledReason": "trial_not_allowed",
+    "restrictedAccessModelCodename": "acai-budino",
+    "modelCardAttributes": {
+     "speed": 2,
+     "intelligence": 5,
+     "cost": 5
+    },
+    "workflow": {
+     "finalModelName": "acai-budino-high",
+     "beta": true
+    },
+    "customAgent": {
+     "finalModelName": "acai-budino-high",
+     "beta": true
+    },
+    "agentService": {
+     "finalModelName": "acai-budino-high",
+     "beta": true
+    }
+   }
+  ]
+ }
+}
