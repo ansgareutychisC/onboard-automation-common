@@ -68,3 +68,4 @@ backend/e2e_state.json
 # Next.js build artifacts in web/
 web/.next/
 web/next-env.d.ts
+backend/api/data/api.lock

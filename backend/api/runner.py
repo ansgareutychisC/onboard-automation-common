@@ -49,15 +49,35 @@ class JobRunner:
 
     # ------------------------------------------------------- lifecycle
     def start(self) -> None:
-        if self._thread and self._thread.is_alive():
-            return
-        self._thread = threading.Thread(target=self._loop,
-                                        name="job-runner", daemon=True)
-        self._thread.start()
+        # lock-guarded: two concurrent enqueue()s on a dead thread must not
+        # spawn two loops (parallel jobs would break the sequential design
+        # — one vendor browser slot, per-IP rate limits)
+        with self._lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()   # re-arm after stop(): don't strand jobs
+            # drain stale stop-sentinels from a previous stop() — otherwise
+            # the fresh loop consumes -1 and exits immediately, stranding
+            # everything enqueued after the restart
+            keep = []
+            while True:
+                try:
+                    v = self._q.get_nowait()
+                except queue.Empty:
+                    break
+                if v != -1:
+                    keep.append(v)
+            for v in keep:
+                self._q.put(v)
+            self._thread = threading.Thread(target=self._loop,
+                                            name="job-runner", daemon=True)
+            self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._q.put(-1)
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=5)
 
     def add_listener(self, fn: EventHandler) -> None:
         with self._lock:
@@ -125,12 +145,21 @@ class JobRunner:
             status = self.db.one(
                 "SELECT status FROM jobs WHERE id=?", (jid,))["status"]
             if status == "running":   # a cancelled job keeps 'cancelled'
-                self.db.set_job(jid, status="done",
-                                finished_at=self._ts())
-                self._emit(jid, "job_done", {})
+                # conditional write — a cancel landing between the read and
+                # this write must NOT be overwritten back to done
+                n = self.db.execute(
+                    "UPDATE jobs SET status='done', finished_at=?"
+                    " WHERE id=? AND status='running'",
+                    (self._ts(), jid))
+                if n:
+                    self._emit(jid, "job_done", {})
         except _Cancelled:
-            self.db.set_job(jid, status="cancelled",
-                            finished_at=self._ts(), error="cancelled")
+            # conditional: only flip non-terminal states (a job that just
+            # finished done must not be downgraded)
+            self.db.execute(
+                "UPDATE jobs SET status='cancelled', finished_at=?"
+                " WHERE id=? AND status IN ('queued','running')",
+                (self._ts(), jid))
             self._emit(jid, "job_cancelled", {})
         except Exception as e:
             self.db.set_job(jid, status="failed", error=str(e)[:500],
@@ -166,7 +195,12 @@ class JobRunner:
                 self.db.set_job_item(item, "running", detail)
                 self._emit(jid, f"signup.{kind}", detail)
 
-            creds = driver.signup(so, on_event=on_event)
+            # cancel probe: lets the driver kill a live signup subprocess
+            # instead of blocking the runner for up to 15 min
+            cancel_fn = (lambda: (self.db.one(
+                "SELECT status FROM jobs WHERE id=?", (jid,))
+                or {}).get("status") == "cancelled")
+            creds = driver.signup(so, on_event=on_event, cancel_fn=cancel_fn)
             aid = self.db.upsert_account_from_creds(creds)
             self.db.add_event("signup_ok", account_id=aid, job_id=jid,
                               detail={"email": creds.get("email"),
@@ -182,6 +216,11 @@ class JobRunner:
             self.db.set_job_item(item, "failed", {"error": str(e)[:300]})
             self.db.add_event("signup_fail", job_id=jid,
                               detail={"error": str(e)[:300]})
+            # a driver-side cancel (killed subprocess) converts to the
+            # cooperative cancel signal so the job ends 'cancelled'
+            row = self.db.one("SELECT status FROM jobs WHERE id=?", (jid,))
+            if row and row["status"] == "cancelled":
+                raise _Cancelled() from e
             raise
 
     def _tail_with_tracking(self, jid: int, driver: ServiceDriver,
@@ -214,14 +253,18 @@ class JobRunner:
             out = driver.provision(creds, spath, to, on_event=on_event)
             self.db.sync_session(aid, out["session"])
             self.db.touch_account_session(aid, spath)
-            self.db.set_account_status(aid, "provisioned", spath)
             errs = [o["label"] for o in out["outcomes"]
                     if isinstance(o.get("result"), dict)
                     and o["result"].get("error")]
-            self.db.set_job_item(item, "done" if not errs else "done",
+            # a tail whose every step errored must NOT report success:
+            # item failed + account stays non-provisioned
+            self.db.set_job_item(item, "failed" if errs else "done",
                                  {"steps": len(out["outcomes"]),
                                   "step_errors": errs})
-            self.db.add_event("tail_ok", account_id=aid, job_id=jid,
+            self.db.set_account_status(
+                aid, "provisioned" if not errs else "failed", spath)
+            self.db.add_event("tail_ok" if not errs else "tail_partial",
+                              account_id=aid, job_id=jid,
                               detail={"steps": len(out["outcomes"]),
                                       "errors": errs})
             return out
@@ -271,10 +314,9 @@ class JobRunner:
                 self._emit(jid, "batch.account_failed",
                            {"index": i + 1, "error": str(e)[:200]})
                 # keep going: batch semantics = best effort per account
-        self.db.set_job_item(self.db.add_job_item(
+        self.db.add_job_item(
             jid, "summary", status="done",
-            detail={"ok": ok, "failed": failed}), "done",
-            {"ok": ok, "failed": failed})
+            detail={"ok": ok, "failed": failed})
 
     def _do_tail(self, jid: int, driver: ServiceDriver, params: dict) -> None:
         self._tail_with_tracking(jid, driver, int(params["account_id"]),
@@ -308,10 +350,14 @@ class JobRunner:
             rec = driver.chat(creds, spath, co, on_event=on_event)
             # persist the chat into the DB (the session file was already
             # updated by the driver; sync picks up the new thread record)
-            import sys as _sys
-            notion_tail = _sys.modules.get("notion_tail")
-            sess = notion_tail.load_session(spath) if notion_tail else {}
-            self.db.sync_session(aid, sess)
+            try:
+                sess = driver.load_session_file(spath)
+            except (OSError, ValueError) as e:
+                sess = {}
+                self._emit(jid, "chat.session_reload_failed",
+                           {"error": str(e)[:160]})
+            if sess:
+                self.db.sync_session(aid, sess)
             self.db.set_job_item(item, "done", {
                 "reply": rec.get("reply"), "model": rec.get("model"),
                 "thread_id": rec.get("threadId"),

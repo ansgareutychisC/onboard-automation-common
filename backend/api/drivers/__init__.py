@@ -19,10 +19,11 @@ def register(name: str, cls: type[ServiceDriver]) -> None:
 
 def get_driver(name: str) -> ServiceDriver:
     try:
-        return REGISTRY[name]()
+        cls = REGISTRY[name]
     except KeyError:
         raise KeyError(
             f"unknown service driver {name!r}; registered: {list(REGISTRY)}")
+    return cls()
 
 
 register("notion", NotionDriver)

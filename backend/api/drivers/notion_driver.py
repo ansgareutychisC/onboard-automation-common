@@ -77,7 +77,8 @@ class NotionDriver(ServiceDriver):
         return nt, sys.modules["notion_e2e"]
 
     # ------------------------------------------------------------ signup
-    def signup(self, opts: SignupOptions, on_event=_noop) -> dict:
+    def signup(self, opts: SignupOptions, on_event=_noop,
+               cancel_fn=None) -> dict:
         out = os.path.join(config.DATA_DIR,
                            f"warm_creds_{os.getpid()}_{int(time.time())}.json")
         cmd = ["node", _WARM_JS, "--attempts", str(opts.attempts),
@@ -90,20 +91,41 @@ class NotionDriver(ServiceDriver):
         _evt(on_event, "signup_start", cmd=" ".join(cmd[1:]),
              email=opts.email, country=opts.country)
         t0 = time.time()
-        # warm signup worst case: 5 attempts × (connect+flow+pace) ≈ 10 min
-        p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
-                           env=env, cwd=config.REPO_ROOT)
-        tail = "\n".join((p.stdout or "").splitlines()[-12:])
-        if p.returncode != 0 or not os.path.exists(out):
-            raise RuntimeError(
-                f"warm signup failed rc={p.returncode} after "
-                f"{time.time()-t0:.0f}s:\n{tail}")
-        with open(out) as f:
-            creds = json.load(f)
         try:
-            os.unlink(out)
-        except OSError:
-            pass
+            # Popen + poll loop (NOT subprocess.run): a cancel must be able
+            # to kill a live warm-signup instead of blocking the single
+            # runner thread for up to 15 minutes
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, env=env, cwd=config.REPO_ROOT)
+            deadline = time.time() + 900
+            while True:
+                try:
+                    p_out, _ = proc.communicate(timeout=5)
+                    break
+                except subprocess.TimeoutExpired:
+                    if cancel_fn and cancel_fn():
+                        proc.kill()
+                        proc.wait()
+                        raise RuntimeError("signup cancelled")
+                    if time.time() > deadline:
+                        proc.kill()
+                        proc.wait()
+                        raise RuntimeError("warm signup timed out (900s)")
+            tail = "\n".join((p_out or "").splitlines()[-12:])
+            if proc.returncode != 0 or not os.path.exists(out):
+                raise RuntimeError(
+                    f"warm signup failed rc={proc.returncode} after "
+                    f"{time.time()-t0:.0f}s:\n{tail}")
+            with open(out) as f:
+                creds = json.load(f)
+        finally:
+            # the creds file holds the live token_v2 + cookie jar — never
+            # leave it on disk, on ANY path
+            try:
+                os.unlink(out)
+            except OSError:
+                pass
         if not creds.get("tokenV2"):
             raise RuntimeError("signup returned no tokenV2 — creds incomplete")
         creds.setdefault("proxyCountry", opts.country)

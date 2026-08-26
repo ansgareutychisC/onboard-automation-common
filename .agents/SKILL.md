@@ -424,7 +424,7 @@ after every refactor.
 │   - Turso HTTP client (lib/turso.js — no-op when not configured)   │
 │                                                                    │
 │   Config (chrome.storage.local):                                   │
-│   - serverUrl (empty=standalone; ws://127.0.0.1:8787=dev daemon)   │
+│   - serverUrl (empty=standalone; ws://127.0.0.1:3000=dev daemon)   │
 │   - emailWorkerUrl, emailWorkerToken (per-domain)                  │
 │   - tursoUrl, tursoToken (optional persistence)                    │
 └────────────────────────────────────────────────────────────────────┘
@@ -459,7 +459,7 @@ after every refactor.
 **Three connection modes (mutually compatible):**
 1. **Standalone** (default) — `serverUrl` empty. Runs macros from popup,
    writes to Turso if configured. MVP distribution shape.
-2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:8787`.
+2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:3000`.
    Agent-driven interactive work. Local dev only.
 3. **Production via CF Worker (HTTP, Phase 2)** — polls `/api/poll`,
    POSTs `/api/result`. No WS.
@@ -522,11 +522,12 @@ after every refactor.
   "stale" (see §1.5)
 
 ### Next
-1. **Live Notion test (USER-SIDE — the only remaining integration step)** —
-   load extension in Chrome (defaults are pre-filled), run `notion/signup`.
-   **Use `*@priv.email` addresses, not privatimail.com (blocked by Notion).**
-   Everything machine-testable has been tested — including a full signup
-   flow on the toy site.
+1. **Notion signup is SOLVED sandbox-side** (warm Zenrows Browser Session,
+   live-verified through the productized API + web UI — accounts provision
+   fully unattended). The extension remains the deterministic, credit-free
+   fallback when the user's browser is connected; a user-side live test of
+   it is OPTIONAL now, not blocking. **Use `*@priv.email` addresses, not
+   privatimail.com (blocked by Notion).**
 2. **Then supabase** — write `macros/supabase/signup.json` (needs the
    extension — hCaptcha required; user solves it manually, form
    auto-submits).
@@ -767,7 +768,25 @@ onboard-automation-common/
 ├── docs/
 │   ├── REVAMP-PLAN.md            ← the full plan, all questions answered
 │   ├── MACROS.md                 ← macro format reference + chunk pattern
-│   └── EXTENSION-VS-CHROME-RD.md ← extension vs raw CDP analysis
+│   ├── EXTENSION-VS-CHROME-RD.md ← extension vs raw CDP analysis
+│   ├── BACKEND-API.md            ← the productized API reference (:3001)
+│   ├── POST-LOGIN-TAIL.md        ← the post-signup master recipe
+│   ├── NOTION-REST-AUTH.md       ← pure-REST signup recipe
+│   └── ZENROWS-EVAL.md           ← Zenrows capability matrix (+ addenda)
+├── backend/
+│   ├── api/                      ← PRODUCTIZED BACKEND (API-first, :3001)
+│   │   ├── server.py             ← FastAPI surface (docs/BACKEND-API.md)
+│   │   ├── runner.py             ← sequential job queue + pacing + cancel
+│   │   ├── db.py                 ← SQLite credential/IP store (WAL)
+│   │   ├── config.py             ← paths/keys/pacing defaults (env-overridable)
+│   │   ├── serve_daemon.py       ← double-fork launcher (flock-guarded)
+│   │   ├── drivers/              ← ServiceDriver ABC + NotionDriver
+│   │   ├── tests/                ← 24 pytest tests (db/runner/api)
+│   │   └── data/onboard.db       ← THE credential store (committed: git-as-disk)
+│   ├── notion_tail.py            ← post-signup tail driver (CLI + library)
+│   ├── notion_e2e.py             ← one-script E2E (extension or warm route)
+│   └── sessions/                 ← per-account session files (gitignored)
+├── web/                          ← Next.js 16 dashboard source (consumes :3001)
 ├── extension/                    ← the actual Chrome MV3 extension (Phase 1)
 │   ├── manifest.json             ← "Onboard Automation Bridge" v0.9.1, ES module
 │   ├── background.js             ← macro runner + 23 cmd handlers + WS (gated) + quickExec
@@ -849,9 +868,42 @@ NODE_PATH=$(npm root -g) node tests/test_toy_signup_e2e.js       # FULL signup +
 # 7. Optional: start the dev daemon (WS bridge + curl-able remote control)
 python3 python-dev-daemon/bridge.py --port 3000
 # connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
+
+# 8. Start the PRODUCTIZED BACKEND (API-first, 127.0.0.1:3001) — the
+#    current main workstream (docs/BACKEND-API.md). Needs python deps
+#    (backend/api/requirements.txt) + the notion-ref clone (step 3, NOT
+#    optional for this) + global playwright for the warm signup.
+python3 backend/api/serve_daemon.py          # double-fork daemon; logs backend/api/data/api.log
+curl -s localhost:3001/api/health            # deps: node/playwright/ref/zenrows all true?
+python3 -m pytest backend/api/tests -q       # 24 unit/integration tests
+# stop: kill $(cat backend/api/data/api.pid)
+# web dashboard: Next.js on :3000 (copy web/ over the platform project),
+# reachable via the Caddy :81 gateway; its fetches use ?XTransformPort=3001
 ```
 
-## 9. When in doubt
+### 8.8 Backend ops gotchas (2026-08-26 session — hard-won)
+
+- **`notion_tail` CLI helpers `sys.exit()`** (missing api key / page id /
+  config). In-process calls therefore raise `SystemExit` — a
+  *BaseException* that KILLS a background thread silently. The API runner
+  guards this (loop-level BaseException catch + driver `_safe` wrapper);
+  NEVER call those helpers unguarded from threads. Regression test:
+  `test_systemexit_does_not_kill_runner`.
+- **Container recycles kill the double-forked API daemon** (mid-session,
+  twice observed). The DB survives on disk; on restart
+  `recover_stale_jobs()` marks interrupted jobs failed ON PURPOSE — don't
+  "fix" that, just re-enqueue. Single-instance guard: flock on
+  `backend/api/data/api.lock` (a second launch aborts before corrupting
+  the live one's job state).
+- **Web fetches MUST go through the Caddy :81 gateway** with
+  `?XTransformPort=3001` — never `http://localhost:3001` from the browser
+  (the gateway rule; hitting :3000 directly 404s).
+- **One runner thread by design**: parallel jobs would fight over the one
+  Zenrows browser slot + per-IP rate limits. Batch throughput = retries
+  inside signup (new session = new IP + new email on captcha) + cooldown
+  between accounts (default 45 s, floor 0 enforced by validation).
+
+### 8.9 When in doubt
 
 - **Read the code, not the docs.** The docs (including this one) may be
   stale. The code is the truth.
@@ -875,8 +927,11 @@ L1  real-browser    extension drives a REAL browser on the  (100% success,
 L2  headless study  decode the protocol from L1 captures    (knowledge)
 L3  hybrid backend  replay via direct HTTP; route the       (90%+, server-
     + clean relays  IP-gated mutations through relays         side, gated ops)
-L4  fully program-  one warm remote browser (or pure REST)  (100%, server-side,
-    atic            satisfies stateful IP bindings            no browser needed)
+L4  fully program-  one warm remote browser (or pure REST)  (near-certain, server-
+    atic            satisfies stateful IP bindings            side, no USER-side
+                                                   browser needed; ~30-50%
+                                                   per attempt, internal
+                                                   retry-rotation)
 ```
 
 **The core pragma: crack first, study second, productize third.** L1 is not
@@ -901,7 +956,8 @@ binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
 ### 9.2 The anti-bot gate taxonomy (classify EVERY blocker before fighting it)
 
 1. **Server-side metadata scoring** — the decision is made at the FIRST
-   touch (e.g. a login-options probe), from request metadata: IP reputation
+   touch (Notion example: the getLoginOptions probe), from request
+   metadata: IP reputation
    × email-newness × rate. Empirical signature: the challenge (hCaptcha etc.)
    appears in the FIRST response, before any DOM interaction. Consequence:
    behavioral humanization (mouse moves, typing rhythm, `js_render`
@@ -910,7 +966,8 @@ binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
    on fresh identities via clean residential IPs → N retry-with-rotation
    reaches arbitrary confidence.
 2. **Stateful IP binding** — multi-step auth flows bind intermediate state
-   (csrfState/nonce) to the IP that CREATED it; submitting from a different
+   (Notion example: csrfState; generally: nonce/challenge) to the IP that
+   CREATED it; submitting from a different
    IP → 422. Signature: every step succeeds in isolation but the final
    submit fails from rotating-IP relays. Fix: ONE stable IP across the
    whole flow — either a real browser (L1) or a session-pinned remote
@@ -918,7 +975,9 @@ binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
    for these flows.
 3. **Plan-gated vendor params** — proxy/scraping vendors gate advanced
    features (IP pinning like `session_id`, long TTLs) behind paid tiers;
-   lower tiers return empty replies / connection drops instead of errors.
+   lower tiers return empty replies, connection drops, or validation errors
+   on the parameter itself instead of a clean permission error (observed
+   both: session_id → empty reply; session_ttl → REQS004 invalid value).
    Signature: "Empty reply from server" on a parameter the docs say exists.
    Fix: don't fight the plan — find the feature that IS included (e.g.
    Browser Sessions on the free tier) or restructure the flow so the
@@ -946,7 +1005,8 @@ binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
 | Vendor Browser Session (CDP `wss://`) | ONE session-pinned residential IP (stable across pages/in-page fetches/idle) | L4 whole-auth flows (signup/login with email codes); OTP waits | single concurrent slot on cheap tiers; 180 s default TTL; connect-storm cooldowns |
 | Edge functions (supabase/netlify) | 1000s of cloud IPs, region-pinnable | region-axis experiments; reaching vendor-blocked hosts; NOT a Cloudflare-WAF bypass (cloud ASN) | cloud ASN reputation; changes hop-1 only |
 
-Empirical vendor rules that transfer (Zenrows-specifics in §Zenrows):
+Empirical vendor rules that transfer (examples from Zenrows — check YOUR
+vendor's equivalents; Zenrows-specifics in §Zenrows):
 - `custom_headers` became a BOOLEAN — headers ride the vendor request;
   `Accept-Encoding: identity` is MANDATORY or you get gzip garbage at 200.
 - Vendor error codes masquerade as target errors (`RESP001` "premium
@@ -973,8 +1033,8 @@ Empirical vendor rules that transfer (Zenrows-specifics in §Zenrows):
 - Poll for codes from the DRIVER process (Node/python), never from inside
   the page (CORS + it dies with the page). Baseline the mailbox id BEFORE
   triggering the send (avoid picking up stale codes), then poll every ~5 s.
-- Code formats differ per flow on the SAME service (mixed-case for login,
-  digits-only for signup) — match `[A-Za-z0-9]{4,10}` on the FIRST LINE of
+- Code formats differ per flow on the SAME service (Notion empirics:
+  mixed-case for login, digits-only for signup) — match `[A-Za-z0-9]{4,10}` on the FIRST LINE of
   the text body, filter by sender+subject keywords, and don't over-fit.
 - During the mail wait the remote browser must stay warm: same-origin
   heartbeat fetch every ~20 s (keeps the connection pool alive AND logs
@@ -991,7 +1051,8 @@ Empirical vendor rules that transfer (Zenrows-specifics in §Zenrows):
   spread future signups across regions (`proxy_country` rotation) and
   avoid stacking burnable identities on one address.
 - Region pinning is a first-class axis: the same vendor key exits through
-  different countries per session; store the country WITH the account.
+  different countries per session (Zenrows: proxy_country); store the
+  country WITH the account.
 - Treat IPs as consumables with reputation half-lives; when a combo starts
   failing, rotate (new session/new country) rather than retry the same IP.
 

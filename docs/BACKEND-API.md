@@ -15,15 +15,44 @@ REST (FastAPI :3001)  →  JobRunner (queue, pacing)  →  ServiceDriver
                         jobs · job_items · events  (+ full creds for replay)
 ```
 
+## Prerequisites
+
+```bash
+pip install -r backend/api/requirements.txt        # fastapi/uvicorn/pydantic (+pytest for tests)
+# node ≥ 18 + playwright GLOBAL install (the warm-signup driver):
+#   NODE_PATH defaults to /home/z/.npm-global/lib/node_modules
+# the notion-ref clone (private repo — needs the GitHub PAT, SKILL.md §4.2):
+#   git clone https://github.com/ansgareutychisC/notion-onboarding-automation.git notion-ref
+#   (NOTION_REF_PATH, default <repo-parent>/notion-ref — the tail/chat REQUIRE it)
+```
+
 ## Run
 
 ```bash
 python3 backend/api/serve_daemon.py     # double-forked, logs data/api.log
 curl -s localhost:3001/api/health       # deps probe (node/playwright/ref…)
+# stop: kill $(cat backend/api/data/api.pid)
+# a second instance aborts on the data/api.lock flock (won't corrupt jobs)
 ```
 
-Env overrides: `ZENROWS_API_KEY`, `NOTION_REF_PATH`, `ONBOARD_DB`,
-`ONBOARD_API_PORT`, `ONBOARD_DEFAULT_COUNTRY`.
+Env overrides: `ZENROWS_API_KEY`, `NOTION_REF_PATH`, `NODE_PATH`,
+`ONBOARD_DB`, `ONBOARD_API_HOST` (default 127.0.0.1 — the loopback binding
+is WHY the web UX must go through the gateway), `ONBOARD_API_PORT`,
+`ONBOARD_DEFAULT_COUNTRY`, `ONBOARD_DATA_DIR`.
+
+### Defaults & error codes
+
+- Signup: `attempts` 5 (1..10) · `run_tail` true · `country` "us"
+- Tail: `workspaces` 1 (1..5) · `route` auto · `trial_pace_s` 15
+- Batch: `count` 2 (1..10) · `cooldown_seconds` 45 (0..3600 — 0 allowed,
+  negative is 422: pacing is IP hygiene, not a preference)
+- Chat: `prompt` 1..4000 chars · `model`/`effort` optional
+- Errors: 404 unknown account/job · 409 export-session with incomplete
+  creds · 422 validation (FastAPI detail array)
+- Job statuses: `queued → running → done | failed | cancelled`
+  (a cancelled finished-job POST returns `{"cancelled": false}`); cancel is
+  cooperative — checked between accounts, during cooldowns, and it KILLS a
+  live warm-signup subprocess (up to ~15 min otherwise).
 
 ## Endpoints
 
@@ -35,14 +64,14 @@ Env overrides: `ZENROWS_API_KEY`, `NOTION_REF_PATH`, `ONBOARD_DB`,
 | GET | `/api/ips` | IP-hygiene table: ip, country, route, accounts-per-IP |
 | GET | `/api/events?limit=50` | audit trail |
 | GET | `/api/accounts` | `?limit&offset&reveal=1` — tokens masked unless reveal |
-| GET | `/api/accounts/{id}` | detail: workspaces, api_keys, chats, pages |
+| GET | `/api/accounts/{id}` | detail: workspaces, api_keys, chats, pages (`?reveal=1` unmasks tokens) |
 | DELETE | `/api/accounts/{id}` | cascade delete |
 | POST | `/api/accounts/{id}/export-session` | regenerate the notion_tail session file from stored creds (session replay) |
 | POST | `/api/signup` | `{email?, country, attempts, run_tail, tail:{workspaces, chat_prompt, route, workspace_name, trial_pace_s}}` → `{job_id}` |
 | POST | `/api/batch` | `{count 1..10, countries:[..], cooldown_seconds, attempts, tail:{..}}` → `{job_id}` |
 | POST | `/api/accounts/{id}/tail` | `{workspaces, chat_prompt, route}` → `{job_id}` (idempotent) |
 | POST | `/api/accounts/{id}/chat` | `{prompt, model?, effort?, space_id?, context_page_id?, thread_id?, route}` → `{job_id}` |
-| GET | `/api/jobs` · `/api/jobs/{id}` | queue + per-item progress |
+| GET | `/api/jobs?limit=50` · `/api/jobs/{id}` | queue + per-item progress (interactive docs: `/api/docs`) |
 | POST | `/api/jobs/{id}/cancel` | cooperative cancel (checked between accounts / during cooldown) |
 
 All long operations are **async jobs**: POST returns `{job_id, poll}` and
@@ -75,8 +104,13 @@ service-agnostic — nothing else changes.
 ## Tests
 
 ```bash
-python3 -m pytest backend/api/tests -q        # 10 unit/integration tests
+python3 -m pytest backend/api/tests -q        # 24 unit/integration tests (~2s)
 ```
-Covers: DB upsert/sync/masking/ip-summary, runner (signup flow, batch
-rotation + cooldown, failure isolation, cancel), API endpoints (health,
-signup+poll, validation, chat, 404s, export-session, models/stats).
+Covers: DB upsert/idempotent-sync/changed-state/masking/ip-summary/
+stale-recovery, runner (signup flow + attempts plumb-through, batch
+rotation + cooldown, failure isolation + summary, tail-all-steps-failed
+semantics, chat persistence via session reload, SystemExit thread-death
+REGRESSION, cancel during signup via the endpoint + stop/restart re-arm),
+API endpoints (health, signup+poll, validation edges incl. negative
+cooldown, chat, 404s + delete cascade, export-session create/no-clobber/
+409, models/stats).

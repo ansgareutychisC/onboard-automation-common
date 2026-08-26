@@ -11,14 +11,20 @@ can stream progress into job_items without knowing service internals.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 EventFn = Callable[[str, dict], None]
+CancelFn = Callable[[], bool]
 
 
 def _noop(kind: str, detail: dict) -> None:  # pragma: no cover
     pass
+
+
+def _never_cancel() -> bool:  # pragma: no cover
+    return False
 
 
 @dataclass
@@ -64,10 +70,12 @@ class ServiceDriver(ABC):
         """Dependency probe: transports, refs, binaries. No side effects."""
 
     @abstractmethod
-    def signup(self, opts: SignupOptions,
-               on_event: EventFn = _noop) -> dict:
+    def signup(self, opts: SignupOptions, on_event: EventFn = _noop,
+               cancel_fn: CancelFn = _never_cancel) -> dict:
         """Create one fresh account. Returns the creds dict (email, identity
-        fields, auth token(s), signupIp, proxyCountry, route, cookies)."""
+        fields, auth token(s), signupIp, proxyCountry, route, cookies).
+        cancel_fn: poll periodically during long operations (e.g. a signup
+        subprocess); return/raise promptly when it returns True."""
 
     @abstractmethod
     def init_session(self, creds: dict, session_path: str) -> dict:
@@ -83,6 +91,12 @@ class ServiceDriver(ABC):
     def chat(self, creds: dict, session_path: str, opts: ChatOptions,
              on_event: EventFn = _noop) -> dict:
         """One chat turn. Returns the reply record (reply, model, tokens…)."""
+
+    def load_session_file(self, session_path: str) -> dict:
+        """Re-read the driver's own session file (default: JSON).
+        Runners use this to re-sync DB rows after chat turns."""
+        with open(session_path) as f:
+            return json.load(f)
 
     def list_models(self) -> list[dict]:  # optional capability
         return []

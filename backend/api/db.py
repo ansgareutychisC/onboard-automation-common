@@ -20,6 +20,7 @@ import os
 import sqlite3
 import threading
 import time
+from contextlib import closing
 from datetime import datetime, timezone
 from typing import Any
 
@@ -138,9 +139,11 @@ class DB:
 
     def __init__(self, path: str | None = None):
         self.path = path or config.DB_PATH
-        os.makedirs(os.path.dirname(self.path), exist_ok=True)
+        d = os.path.dirname(self.path)
+        if d:
+            os.makedirs(d, exist_ok=True)
         self._lock = threading.Lock()
-        with self._conn() as c:
+        with closing(self._conn()) as c:
             c.executescript(_SCHEMA)
 
     def _conn(self) -> sqlite3.Connection:
@@ -152,13 +155,16 @@ class DB:
 
     # ------------------------------------------------------------ generic
     def execute(self, sql: str, params: tuple | list = ()) -> int:
-        with self._lock, self._conn() as c:
+        """One statement. INSERT → new rowid; UPDATE/DELETE → affected rows."""
+        with self._lock, closing(self._conn()) as c:
             cur = c.execute(sql, params)
             c.commit()
-            return cur.lastrowid or -1
+            if sql.lstrip()[:6].upper().startswith("INSERT"):
+                return cur.lastrowid or -1
+            return cur.rowcount
 
     def query(self, sql: str, params: tuple | list = ()) -> list[dict]:
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             return [dict(r) for r in c.execute(sql, params).fetchall()]
 
     def one(self, sql: str, params: tuple | list = ()) -> dict | None:
@@ -211,83 +217,85 @@ class DB:
 
     # ----------------------------- sync tail results (session -> tables) --
     def sync_session(self, aid: int, sess: dict) -> None:
-        """Idempotently mirror a notion_tail session dict into the tables."""
+        """Idempotently mirror a notion_tail session dict into the tables.
+        Runs in ONE transaction so a crash mid-sync can't leave torn state
+        (idempotency heals re-runs, but a single tx is cheaper than grief)."""
         now = _now()
-        for sp in sess.get("spaces") or []:
-            sid = sp.get("id")
-            if not sid:
-                continue
-            trial = (sess.get("trials") or {}).get(sid) or {}
-            row = self.one(
-                "SELECT id FROM workspaces WHERE account_id=? AND space_id=?",
-                (aid, sid))
-            common = (sp.get("name"), sp.get("icon"), sp.get("viewId"),
-                      trial.get("status") or trial.get("type"),
-                      trial.get("tier"), trial.get("type"),
-                      1 if (sess.get("space") or {}).get("id") == sid else 0)
-            if row:
-                self.execute(
-                    "UPDATE workspaces SET name=?, icon=?, view_id=?,"
-                    " trial_status=?, trial_tier=?, trial_type=?, active=?"
-                    " WHERE id=?", (*common, row["id"]))
-            else:
-                self.execute(
-                    "INSERT INTO workspaces (account_id, space_id, name, icon,"
-                    " view_id, trial_status, trial_tier, trial_type, active,"
-                    " created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                    (aid, sid, *common, now))
-        for sid, k in (sess.get("apiKeys") or {}).items():
-            tok = k.get("token")
-            if not tok:
-                continue
-            if not self.one(
-                    "SELECT id FROM api_keys WHERE account_id=? AND token=?",
-                    (aid, tok)):
-                self.execute(
-                    "INSERT INTO api_keys (account_id, workspace_id, name,"
-                    " token, expiration, verified, created_at)"
-                    " VALUES (?,?,?,?,?,?,?)",
-                    (aid, sid, k.get("name") or "automation-pat", tok,
-                     k.get("expiration") or "1_year",
-                     1 if k.get("verified") else 0, now))
-        known_threads = {
-            r["thread_id"] for r in self.query(
-                "SELECT thread_id FROM chats WHERE account_id=?", (aid,))}
-        for ch in sess.get("chats") or []:
-            tid = ch.get("threadId")
-            if not tid or tid in known_threads:
-                continue
-            self.execute(
-                "INSERT INTO chats (account_id, workspace_id, thread_id,"
-                " prompt, reply, model, effort, outcome_json, tokens_json,"
-                " route, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (aid, ch.get("spaceId"), tid, ch.get("prompt"),
-                 ch.get("reply"), ch.get("model"), ch.get("effort"),
-                 json.dumps(ch.get("outcome"), default=str),
-                 json.dumps(ch.get("tokens")), ch.get("route"), now))
-        prompts = sess.get("prompts") or {}
-        for pg in sess.get("pages") or []:
-            pid = pg.get("id")
-            if not pid or self.one(
-                    "SELECT id FROM pages WHERE account_id=? AND page_id=?",
-                    (aid, pid)):
-                continue
-            # derive kind from prompt assignments (instruction/skill pages
-            # carry a prompt row; plain pages stay 'page')
-            kind = (prompts.get(pid) or {}).get("promptType") or "page"
-            existing_page = self.one(
-                "SELECT id, kind FROM pages WHERE account_id=? AND page_id=?",
-                (aid, pid))
-            if existing_page:
-                if not existing_page["kind"]:
-                    self.execute("UPDATE pages SET kind=? WHERE id=?",
-                                 (kind, existing_page["id"]))
-                continue
-            self.execute(
-                "INSERT INTO pages (account_id, page_id, title, url, kind,"
-                " created_at) VALUES (?,?,?,?,?,?)",
-                (aid, pid, pg.get("title"), pg.get("url"), kind, now))
-        self.execute("UPDATE accounts SET updated_at=? WHERE id=?", (now, aid))
+        with self._lock, closing(self._conn()) as c:
+            def ex(sql: str, params: tuple | list = ()) -> None:
+                c.execute(sql, params)
+
+            for sp in sess.get("spaces") or []:
+                sid = sp.get("id")
+                if not sid:
+                    continue
+                trial = (sess.get("trials") or {}).get(sid) or {}
+                common = (sp.get("name"), sp.get("icon"), sp.get("viewId"),
+                          trial.get("status") or trial.get("type"),
+                          trial.get("tier"), trial.get("type"),
+                          1 if (sess.get("space") or {}).get("id") == sid else 0)
+                row = c.execute(
+                    "SELECT id FROM workspaces WHERE account_id=? AND"
+                    " space_id=?", (aid, sid)).fetchone()
+                if row:
+                    ex("UPDATE workspaces SET name=?, icon=?, view_id=?,"
+                       " trial_status=?, trial_tier=?, trial_type=?, active=?"
+                       " WHERE id=?", (*common, row["id"]))
+                else:
+                    ex("INSERT INTO workspaces (account_id, space_id, name,"
+                       " icon, view_id, trial_status, trial_tier, trial_type,"
+                       " active, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                       (aid, sid, *common, now))
+            for sid, k in (sess.get("apiKeys") or {}).items():
+                tok = k.get("token")
+                if not tok:
+                    continue
+                if not c.execute(
+                        "SELECT id FROM api_keys WHERE account_id=? AND"
+                        " token=?", (aid, tok)).fetchone():
+                    ex("INSERT INTO api_keys (account_id, workspace_id, name,"
+                       " token, expiration, verified, created_at)"
+                       " VALUES (?,?,?,?,?,?,?)",
+                       (aid, sid, k.get("name") or "automation-pat", tok,
+                        k.get("expiration") or "1_year",
+                        1 if k.get("verified") else 0, now))
+            known_threads = {
+                r["thread_id"] for r in c.execute(
+                    "SELECT thread_id FROM chats WHERE account_id=?",
+                    (aid,)).fetchall()}
+            for ch in sess.get("chats") or []:
+                tid = ch.get("threadId")
+                if not tid or tid in known_threads:
+                    continue
+                ex("INSERT INTO chats (account_id, workspace_id, thread_id,"
+                   " prompt, reply, model, effort, outcome_json, tokens_json,"
+                   " route, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                   (aid, ch.get("spaceId"), tid, ch.get("prompt"),
+                    ch.get("reply"), ch.get("model"), ch.get("effort"),
+                    json.dumps(ch.get("outcome"), default=str),
+                    json.dumps(ch.get("tokens")), ch.get("route"), now))
+            prompts = sess.get("prompts") or {}
+            for pg in sess.get("pages") or []:
+                pid = pg.get("id")
+                if not pid:
+                    continue
+                # derive kind from prompt assignments (instruction/skill
+                # pages carry a prompt row; plain pages stay 'page');
+                # upgrade-only, never downgrade a known kind
+                kind = (prompts.get(pid) or {}).get("promptType") or "page"
+                row = c.execute(
+                    "SELECT id, kind FROM pages WHERE account_id=? AND"
+                    " page_id=?", (aid, pid)).fetchone()
+                if row:
+                    if kind != "page" and row["kind"] != kind:
+                        ex("UPDATE pages SET kind=? WHERE id=?",
+                           (kind, row["id"]))
+                    continue
+                ex("INSERT INTO pages (account_id, page_id, title, url, kind,"
+                   " created_at) VALUES (?,?,?,?,?,?)",
+                   (aid, pid, pg.get("title"), pg.get("url"), kind, now))
+            ex("UPDATE accounts SET updated_at=? WHERE id=?", (now, aid))
+            c.commit()
 
     # ------------------------------------------------------------- jobs
     def create_job(self, jtype: str, params: dict) -> int:
@@ -392,7 +400,8 @@ class DB:
 
     def ip_summary(self) -> list[dict]:
         return self.query(
-            "SELECT signup_ip ip, proxy_country country, signup_route route,"
+            "SELECT signup_ip ip, proxy_country country,"
+            " MIN(signup_route) route,"
             " COUNT(*) accounts, MIN(created_at) first_at,"
             " MAX(created_at) last_at FROM accounts"
             " WHERE signup_ip IS NOT NULL"
@@ -417,15 +426,21 @@ class DB:
         }
 
     def recover_stale_jobs(self) -> int:
-        """Mark jobs left 'running'/'queued' by a server restart as failed."""
+        """Mark jobs left 'running'/'queued' by a server restart as failed
+        (and fail their in-flight items so the UI doesn't show zombies)."""
         now = _now()
-        with self._lock, self._conn() as c:
+        with self._lock, closing(self._conn()) as c:
             cur = c.execute(
                 "UPDATE jobs SET status='failed', error='interrupted by"
                 " server restart', updated_at=?, finished_at=?"
                 " WHERE status IN ('running','queued')", (now, now))
+            n = cur.rowcount
+            c.execute(
+                "UPDATE job_items SET status='failed', updated_at=?,"
+                " detail_json=COALESCE(detail_json,'{}') WHERE status IN"
+                " ('running','pending')", (now,))
             c.commit()
-            return cur.rowcount
+            return n
 
 
 def session_path_for(aid: int, email: str) -> str:

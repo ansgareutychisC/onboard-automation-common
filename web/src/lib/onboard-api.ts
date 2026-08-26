@@ -12,9 +12,13 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
   if (!res.ok) {
-    let detail = res.statusText;
+    let detail: string = res.statusText;
     try {
-      detail = (await res.json()).detail ?? detail;
+      const body = await res.json();
+      // FastAPI validation errors put an ARRAY in detail; others a string
+      const d = body?.detail;
+      detail =
+        typeof d === "string" ? d : d ? JSON.stringify(d) : detail;
     } catch {
       /* keep statusText */
     }

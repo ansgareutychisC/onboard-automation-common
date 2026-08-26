@@ -3,13 +3,15 @@
 API-first: every operation is triggerable programmatically (curl);
 the web UX (Next.js on :3000) is a plain consumer of these endpoints.
 
-Run:   python3 backend/api/server.py
+Run:   python3 backend/api/serve_daemon.py   (daemon; logs data/api.log)
+  or:  python3 -m backend.api.server         (foreground)
 Probe: curl -s localhost:3001/api/health
 """
 from __future__ import annotations
 
 import json
 import os
+import time
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -43,7 +45,8 @@ class BatchBody(BaseModel):
     count: int = Field(default=2, ge=1, le=config.BATCH_MAX_COUNT)
     country: str | None = None
     countries: list[str] | None = None     # rotate across these
-    cooldown_seconds: float = config.DEFAULT_BATCH_COOLDOWN_S
+    cooldown_seconds: float = Field(
+        default=config.DEFAULT_BATCH_COOLDOWN_S, ge=0, le=3600)
     attempts: int = Field(default=config.DEFAULT_SIGNUP_ATTEMPTS, ge=1, le=10)
     tail: TailBody | None = None
 
@@ -65,7 +68,7 @@ class CancelBody(BaseModel):
 def create_app(db: DB | None = None, runner: JobRunner | None = None,
                driver_name: str = "notion") -> FastAPI:
     app = FastAPI(title="onboard-automation backend",
-                  version="1.0.0", docs_url="/api/docs")
+                  version="1.1.0", docs_url="/api/docs")
     app.add_middleware(
         CORSMiddleware,
         # the web UX reaches this API through the Caddy gateway
@@ -74,14 +77,17 @@ def create_app(db: DB | None = None, runner: JobRunner | None = None,
         allow_origins=["*"],
         allow_methods=["*"], allow_headers=["*"])
     db = db or DB()
+    # eager runner construction: a lazy path here would race two
+    # JobRunners into existence (and the 2nd's recover_stale_jobs would
+    # fail the 1st's just-queued job)
+    if runner is None:
+        runner = JobRunner(db, driver_name)
     state = {"db": db, "runner": runner,
              "driver_name": driver_name}
 
     def need_runner() -> JobRunner:
-        if not state["runner"]:
-            state["runner"] = JobRunner(db, driver_name)
-            state["runner"].start()
-        return state["runner"]
+        runner.start()          # no-op if alive; safe re-arm after stop()
+        return runner
 
     # ------------------------------------------------------------- meta
     @app.get("/api/health")
@@ -138,16 +144,24 @@ def create_app(db: DB | None = None, runner: JobRunner | None = None,
     @app.post("/api/accounts/{aid}/export-session")
     def export_session(aid: int) -> dict:
         """Regenerate the notion_tail session file from stored creds
-        (session replay entry point)."""
+        (session replay entry point). Only writes when the file is MISSING —
+        never clobbers a richer existing session (workspaces/keys/chats)."""
         acct = db.one("SELECT * FROM accounts WHERE id=?", (aid,))
         if not acct:
             raise HTTPException(404, f"account {aid} not found")
         drv = get_driver(state["driver_name"])
-        spath = session_path_for(aid, acct["email"])
+        spath = acct["session_path"] or session_path_for(aid, acct["email"])
+        if os.path.exists(spath):
+            return {"session_path": spath, "email": acct["email"],
+                    "has_token": bool(acct["token_v2"]), "created": False}
+        if not (acct["token_v2"] and acct["user_id"] and acct["device_id"]):
+            raise HTTPException(
+                409, f"account {aid} has incomplete creds in the DB "
+                     f"(token/user/device) — cannot build a session")
         sess = drv.init_session(creds_from_account(acct), spath)
         db.touch_account_session(aid, spath)
         return {"session_path": spath, "email": sess.get("email"),
-                "has_token": bool(sess.get("tokenV2"))}
+                "has_token": bool(sess.get("tokenV2")), "created": True}
 
     # ------------------------------------------------------------ jobs
     @app.post("/api/signup")
@@ -205,9 +219,15 @@ def create_app(db: DB | None = None, runner: JobRunner | None = None,
         if row["status"] in ("done", "failed", "cancelled"):
             return {"job_id": jid, "status": row["status"],
                     "cancelled": False}
-        db.set_job(jid, status="cancelled")
-        db.add_event("job_cancel_requested", job_id=jid)
-        return {"job_id": jid, "status": "cancelled", "cancelled": True}
+        # conditional write — never downgrade a job that just finished
+        n = db.execute(
+            "UPDATE jobs SET status='cancelled', finished_at=?"
+            " WHERE id=? AND status IN ('queued','running')",
+            (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()), jid))
+        if n:
+            db.add_event("job_cancel_requested", job_id=jid)
+        return {"job_id": jid, "status": "cancelled",
+                "cancelled": bool(n)}
 
     return app
 

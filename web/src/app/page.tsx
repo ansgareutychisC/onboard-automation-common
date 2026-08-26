@@ -12,6 +12,7 @@ import {
   RefreshCw,
   Server,
   Trash2,
+  TriangleAlert,
   Workflow,
 } from 'lucide-react';
 
@@ -27,7 +28,6 @@ import {
 } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   Select,
   SelectContent,
@@ -66,7 +66,17 @@ function statusBadge(s: string) {
 
 function tsOf(iso: string | null): string {
   if (!iso) return '–';
-  return iso.replace('T', ' ').replace('Z', '').slice(5, 19);
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: 'short',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+  } catch {
+    return iso;
+  }
 }
 
 /* ------------------------------------------------------------------ page */
@@ -79,6 +89,10 @@ export default function Home() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [busy, setBusy] = useState(false);
   const [tab, setTab] = useState('accounts');
+  // connectivity: consecutive poll failures + last good data timestamp
+  const failCount = useRef(0);
+  const [lastOk, setLastOk] = useState<string | null>(null);
+  const [disconnected, setDisconnected] = useState(false);
 
   // signup form
   const [country, setCountry] = useState('us');
@@ -97,7 +111,7 @@ export default function Home() {
   const [model, setModel] = useState<string>('default');
   const [effort, setEffort] = useState<string>('default');
   const [chatReply, setChatReply] = useState<{ reply: string; model: string | null } | null>(null);
-  const chatPending = useRef(false);
+  const [chatPending, setChatPending] = useState(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -111,8 +125,13 @@ export default function Home() {
       setStats(s);
       setAccounts(a);
       setJobs(j);
-    } catch (e) {
-      /* transient — keep last state */
+      failCount.current = 0;
+      setDisconnected(false);
+      setLastOk(new Date().toLocaleTimeString());
+    } catch {
+      // transient errors keep the last state, but 3+ in a row surface it
+      failCount.current += 1;
+      if (failCount.current >= 3) setDisconnected(true);
     }
   }, []);
 
@@ -157,7 +176,7 @@ export default function Home() {
     try {
       const r = await api.exportSession(id);
       toast({
-        title: 'Session exported',
+        title: r.created ? 'Session created' : 'Session already exists',
         description: r.has_token ? r.session_path : 'WARNING: no token stored',
       });
     } catch (e) {
@@ -166,8 +185,8 @@ export default function Home() {
   }
 
   async function sendChat() {
-    if (!chatAccount || !prompt.trim() || chatPending.current) return;
-    chatPending.current = true;
+    if (!chatAccount || !prompt.trim() || chatPending) return;
+    setChatPending(true);
     setChatReply(null);
     try {
       const { job_id } = await api.chat(Number(chatAccount), {
@@ -176,34 +195,47 @@ export default function Home() {
         ...(effort !== 'default' ? { effort } : {}),
       });
       toast({ title: 'Chat started', description: `job #${job_id}` });
-      // poll the job until done
+      let consecutiveErrors = 0;
       for (let i = 0; i < 120; i++) {
         await new Promise((r) => setTimeout(r, 2000));
-        const j = await api.job(job_id);
-        if (j.status === 'done') {
-          const item = (j.items ?? []).find((it) => it.label === 'chat');
-          const d = (item?.detail ?? {}) as { reply?: string; model?: string };
-          setChatReply({ reply: d.reply ?? '(empty reply)', model: d.model ?? null });
-          refresh();
-          break;
+        try {
+          const j = await api.job(job_id);
+          consecutiveErrors = 0;
+          if (j.status === 'done') {
+            const item = (j.items ?? []).find((it) => it.label === 'chat');
+            const d = (item?.detail ?? {}) as { reply?: string; model?: string };
+            setChatReply({ reply: d.reply ?? '(empty reply)', model: d.model ?? null });
+            refresh();
+            break;
+          }
+          if (j.status === 'failed' || j.status === 'cancelled') {
+            toast({
+              title: 'Chat failed',
+              description: j.error ?? 'see jobs',
+              variant: 'destructive',
+            });
+            break;
+          }
+        } catch {
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 3) throw new Error('polling failed 3× in a row');
         }
-        if (j.status === 'failed' || j.status === 'cancelled') {
+        if (i === 119) {
           toast({
-            title: 'Chat failed',
-            description: j.error ?? 'see jobs',
-            variant: 'destructive',
+            title: `Job #${job_id} still running`,
+            description: 'Check the Jobs tab for its progress.',
           });
-          break;
         }
       }
     } catch (e) {
       toast({ title: 'Chat failed', description: String(e), variant: 'destructive' });
     } finally {
-      chatPending.current = false;
+      setChatPending(false);
     }
   }
 
   const depsOk = health?.deps?.ok;
+  const neverLoaded = health === null && !disconnected;
 
   return (
     <div className="min-h-screen flex flex-col bg-background text-foreground">
@@ -216,12 +248,17 @@ export default function Home() {
             Notion accounts — warm-session signup, provision, chat · API :3001
           </p>
         </div>
-        {depsOk !== undefined && (
+        {disconnected ? (
+          <Badge variant="destructive" className="gap-1">
+            <TriangleAlert className="h-3 w-3" />
+            API unreachable{lastOk ? ` — data as of ${lastOk}` : ''}
+          </Badge>
+        ) : depsOk !== undefined ? (
           <Badge variant={depsOk ? 'default' : 'destructive'} className="gap-1">
             <Server className="h-3 w-3" />
             {depsOk ? 'backend healthy' : 'backend degraded'}
           </Badge>
-        )}
+        ) : null}
         {activeJob && (
           <Badge variant="secondary" className="gap-1">
             <Loader2 className="h-3 w-3 animate-spin" />
@@ -251,7 +288,11 @@ export default function Home() {
               <span className="text-xs">{s.label}</span>
             </div>
             <div className="text-2xl font-bold tabular-nums">
-              {s.value ?? <span className="text-muted-foreground">–</span>}
+              {neverLoaded ? (
+                <span className="text-muted-foreground">…</span>
+              ) : (
+                (s.value ?? <span className="text-muted-foreground">–</span>)
+              )}
             </div>
           </Card>
         ))}
@@ -278,7 +319,7 @@ export default function Home() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <ScrollArea className="max-h-[60vh]">
+                <div className="max-h-[60vh] overflow-auto rounded-md border">
                   <Table>
                     <TableHeader>
                       <TableRow>
@@ -293,7 +334,14 @@ export default function Home() {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {accounts.length === 0 && (
+                      {neverLoaded && (
+                        <TableRow>
+                          <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
+                            Loading…
+                          </TableCell>
+                        </TableRow>
+                      )}
+                      {!neverLoaded && accounts.length === 0 && (
                         <TableRow>
                           <TableCell colSpan={8} className="text-center text-muted-foreground py-8">
                             No accounts yet — create one in “Sign up / Batch”.
@@ -303,7 +351,7 @@ export default function Home() {
                       {accounts.map((a) => (
                         <TableRow key={a.id}>
                           <TableCell className="font-mono">{a.id}</TableCell>
-                          <TableCell className="font-mono text-xs max-w-[22rem] truncate">
+                          <TableCell className="font-mono text-xs max-w-[22rem] truncate" title={a.email}>
                             {a.email}
                           </TableCell>
                           <TableCell>{statusBadge(a.status)}</TableCell>
@@ -333,6 +381,7 @@ export default function Home() {
                             </Button>
                             <Button
                               size="sm" variant="ghost" aria-label="delete"
+                              disabled={!!activeJob}
                               onClick={() => removeAccount(a.id, a.email)}
                             >
                               <Trash2 className="h-4 w-4 text-destructive" />
@@ -342,7 +391,7 @@ export default function Home() {
                       ))}
                     </TableBody>
                   </Table>
-                </ScrollArea>
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -427,7 +476,7 @@ export default function Home() {
                     </div>
                     <div className="space-y-2">
                       <Label htmlFor="cooldown">cooldown (s)</Label>
-                      <Input id="cooldown" type="number" min={0}
+                      <Input id="cooldown" type="number" min={0} max={3600}
                         value={cooldown} onChange={(e) => setCooldown(e.target.value)} />
                     </div>
                   </div>
@@ -468,16 +517,14 @@ export default function Home() {
                 </div>
               </CardHeader>
               <CardContent className="space-y-3">
-                {jobs.length === 0 && (
+                {jobs.length === 0 && !neverLoaded && (
                   <p className="text-muted-foreground text-sm py-6 text-center">No jobs yet.</p>
                 )}
-                <ScrollArea className="max-h-[60vh]">
-                  <div className="space-y-2">
-                    {jobs.map((j) => (
-                      <JobRow key={j.id} job={j} onChanged={refresh} />
-                    ))}
-                  </div>
-                </ScrollArea>
+                <div className="max-h-[60vh] overflow-auto space-y-2 pr-1">
+                  {jobs.map((j) => (
+                    <JobRow key={j.id} job={j} onChanged={refresh} />
+                  ))}
+                </div>
               </CardContent>
             </Card>
           </TabsContent>
@@ -495,28 +542,35 @@ export default function Home() {
               <CardContent className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-3">
                   <div className="space-y-2">
-                    <Label>account</Label>
+                    <Label htmlFor="chatAccount">account</Label>
                     <Select value={chatAccount} onValueChange={setChatAccount}>
-                      <SelectTrigger><SelectValue placeholder="select account" /></SelectTrigger>
+                      <SelectTrigger id="chatAccount">
+                        <SelectValue placeholder="select account" />
+                      </SelectTrigger>
                       <SelectContent>
                         {accounts.map((a) => (
                           <SelectItem key={a.id} value={String(a.id)}>
-                            #{a.id} {a.email.slice(0, 28)}…
+                            #{a.id} {a.email.slice(0, 28)}
                           </SelectItem>
                         ))}
                       </SelectContent>
                     </Select>
                   </div>
                   <ModelSelect value={model} onChange={setModel} />
-                  <EffortSelect value={effort} onChange={setEffort} />
+                  <EffortSelect value={effort} onChange={setEffort} model={model} />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="prompt">prompt</Label>
-                  <Input id="prompt" value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+                  <Input id="prompt" maxLength={4000} value={prompt}
+                    onChange={(e) => setPrompt(e.target.value)} />
                 </div>
-                <Button onClick={sendChat} disabled={!chatAccount || !prompt.trim()}>
-                  <Bot className="h-4 w-4 mr-2" />
-                  Send
+                <Button onClick={sendChat} disabled={!chatAccount || !prompt.trim() || chatPending}>
+                  {chatPending ? (
+                    <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                  ) : (
+                    <Bot className="h-4 w-4 mr-2" />
+                  )}
+                  {chatPending ? 'Waiting for reply…' : 'Send'}
                 </Button>
                 <Separator />
                 {chatReply ? (
@@ -526,6 +580,11 @@ export default function Home() {
                     </div>
                     <div className="whitespace-pre-wrap">{chatReply.reply}</div>
                   </div>
+                ) : chatPending ? (
+                  <p className="text-sm text-muted-foreground">
+                    Chat job queued — the runner is sequential, so it may wait
+                    behind running jobs…
+                  </p>
                 ) : (
                   <p className="text-sm text-muted-foreground">
                     Replies appear here (also stored per account in the DB).
@@ -554,14 +613,15 @@ export default function Home() {
 
 function ModelSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
   const [models, setModels] = useState<{ codename: string; name: string }[]>([]);
+  const [failed, setFailed] = useState(false);
   useEffect(() => {
-    api.models().then(setModels).catch(() => setModels([]));
+    api.models().then(setModels).catch(() => setFailed(true));
   }, []);
   return (
     <div className="space-y-2">
-      <Label>model</Label>
+      <Label htmlFor="chatModel">model</Label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger><SelectValue placeholder="default (opal-quince)" /></SelectTrigger>
+        <SelectTrigger id="chatModel"><SelectValue placeholder="default (opal-quince)" /></SelectTrigger>
         <SelectContent className="max-h-72">
           <SelectItem value="default">default</SelectItem>
           {models.map((m) => (
@@ -569,20 +629,43 @@ function ModelSelect({ value, onChange }: { value: string; onChange: (v: string)
               {m.name} · {m.codename}
             </SelectItem>
           ))}
+          {models.length === 0 && failed && (
+            <div className="px-2 py-1 text-xs text-muted-foreground">
+              model list unavailable
+            </div>
+          )}
         </SelectContent>
       </Select>
     </div>
   );
 }
 
-function EffortSelect({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+function EffortSelect({ value, onChange, model }: {
+  value: string;
+  onChange: (v: string) => void;
+  model: string;
+}) {
+  const [all, setAll] = useState<{ codename: string; efforts: string[] }[]>([]);
+  useEffect(() => {
+    let alive = true;
+    api.models()
+      .then((ms) => {
+        if (alive) setAll(ms.map((m) => ({ codename: m.codename, efforts: m.efforts })));
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, []);
+  const efforts = all.find((m) => m.codename === model)?.efforts ?? [];
+  const choices = efforts.length ? ['default', ...efforts] : ['default', 'low', 'medium', 'high'];
   return (
     <div className="space-y-2">
-      <Label>reasoning effort</Label>
+      <Label htmlFor="chatEffort">reasoning effort</Label>
       <Select value={value} onValueChange={onChange}>
-        <SelectTrigger><SelectValue placeholder="model default" /></SelectTrigger>
+        <SelectTrigger id="chatEffort"><SelectValue placeholder="model default" /></SelectTrigger>
         <SelectContent>
-          {['default', 'low', 'medium', 'high'].map((e) => (
+          {choices.map((e) => (
             <SelectItem key={e} value={e}>{e}</SelectItem>
           ))}
         </SelectContent>
@@ -615,31 +698,34 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
 
   return (
     <div className="rounded-lg border">
-      <button
-        className="w-full flex items-center gap-3 px-3 py-2 text-left text-sm"
-        onClick={() => setOpen((o) => !o)}
-      >
-        <span className="font-mono text-xs text-muted-foreground">#{job.id}</span>
-        <span className="font-medium">{job.type}</span>
-        {statusBadge(job.status)}
-        {active && <Loader2 className="h-3 w-3 animate-spin" />}
-        <span className="ml-auto text-xs text-muted-foreground">{tsOf(job.created_at)}</span>
+      <div className="w-full flex items-center gap-3 px-3 py-2 text-left text-sm">
+        <Button
+          variant="ghost"
+          size="sm"
+          className="flex-1 h-auto p-0 justify-start font-normal gap-3"
+          aria-expanded={open}
+          onClick={() => setOpen((o) => !o)}
+        >
+          <span className="font-mono text-xs text-muted-foreground">#{job.id}</span>
+          <span className="font-medium">{job.type}</span>
+          {statusBadge(job.status)}
+          {active && <Loader2 className="h-3 w-3 animate-spin" />}
+          <span className="ml-auto text-xs text-muted-foreground">{tsOf(job.created_at)}</span>
+        </Button>
         {active && (
-          <span
-            role="button"
-            tabIndex={0}
-            className="text-xs text-destructive underline"
-            onClick={async (e) => {
-              e.stopPropagation();
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive text-xs underline h-auto py-0"
+            onClick={async () => {
               await api.cancelJob(job.id).catch(() => {});
               onChanged();
             }}
-            onKeyDown={(e) => e.key === 'Enter' && setOpen((o) => !o)}
           >
             cancel
-          </span>
+          </Button>
         )}
-      </button>
+      </div>
       {job.error && (
         <div className="px-3 pb-2 text-xs text-destructive">{job.error}</div>
       )}
