@@ -38,6 +38,11 @@ Usage:
   python3 backend/notion_e2e.py --workspaces 3
   python3 backend/notion_e2e.py --email-domain v4        # force a domain
   python3 backend/notion_e2e.py --email foo@v3-mail.priv.email
+  python3 backend/notion_e2e.py --probe-via-zenros       # pre-flight: probe
+                                                         # getLoginOptions via
+                                                         # Zenros until PASS,
+                                                         # saves code-email
+                                                         # reputation cost
   python3 backend/notion_e2e.py --no-signup --session backend/sessions/x.json
                                                          # idempotent re-run
 """
@@ -57,7 +62,9 @@ import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+sys.path.insert(0, os.path.join(HERE, "..", "scripts"))  # for notion_signup_zenrows
 import notion_tail as nt  # noqa: E402
+import notion_signup_zenrows as zsu  # noqa: E402
 
 DAEMON = os.environ.get("BRIDGE_URL", "http://127.0.0.1:3000")
 MACRO_PATH = os.path.join(HERE, "..", "extension", "macros", "notion",
@@ -223,6 +230,47 @@ def run_signup(email: str, mail_url: str, mail_token: str) -> dict:
     if creds.get("version"):
         creds["clientVersion"] = creds.pop("version")
     return creds
+
+
+def probe_via_zenros(email: str, max_retries: int = 5,
+                    proxy_country: str = "us") -> tuple[str, dict]:
+    """Pre-flight probe: getLoginOptions via Zenros until PASS (no captcha).
+
+    Saves code-email reputation cost: if we know in advance that an email
+    will get captcha from a residential IP, we don't even try the extension
+    macro (which would send a real code email and waste reputation).
+
+    Returns (email_to_use, probe_result_dict). If email_to_use == email,
+    the original probe passed. If email_to_use differs, we rotated to a
+    passing email. If email_to_use is empty, all retries failed.
+    """
+    log(f"probing getLoginOptions via Zenros premium_proxy={proxy_country} "
+        f"(up to {max_retries} retries) — saves code-email reputation cost")
+    current_email = email
+    for attempt in range(1, max_retries + 1):
+        try:
+            ok, parsed, raw = zsu.probe_get_login_options(
+                current_email, use_proxy=True, proxy_country=proxy_country)
+        except Exception as e:                                # noqa: BLE001
+            log(f"  probe attempt {attempt}/{max_retries}: EXC {e}")
+            current_email = f"e2e-{int(time.time())}-{secrets.token_hex(3)}@v3-mail.priv.email"
+            log(f"  rotating to {current_email}")
+            time.sleep(5)
+            continue
+        if ok:
+            log(f"  probe attempt {attempt}/{max_retries}: PASS — "
+                f"loginOptionsToken acquired for {current_email}")
+            return current_email, {"ok": True, "attempts": attempt,
+                                   "email": current_email,
+                                   "loginOptionsToken": parsed.get("loginOptionsToken", "")[:30] + "..."}
+        challenge = parsed.get("challengeProvider") or "no_token"
+        log(f"  probe attempt {attempt}/{max_retries}: captcha ({challenge}) — "
+            f"rotating to fresh email")
+        current_email = f"e2e-{int(time.time())}-{secrets.token_hex(3)}@v3-mail.priv.email"
+        log(f"  new email: {current_email}")
+        time.sleep(5)  # pace to avoid rate limit
+    return "", {"ok": False, "attempts": max_retries,
+                "last_email": current_email}
 
 
 # ---------------------------------------------------------------------------
@@ -395,6 +443,19 @@ def main() -> None:
                    default="auto")
     p.add_argument("--zenrows-key", default=os.environ.get(
         "ZENROWS_API_KEY", nt.ZENROWS_KEY_DEFAULT))
+    p.add_argument("--probe-via-zenros", action="store_true",
+                   help="pre-flight: probe getLoginOptions via Zenros "
+                        "premium_proxy=us before triggering the extension "
+                        "macro. Saves code-email reputation cost on "
+                        "captcha-gated emails (rotates to a passing email "
+                        "instead of sending a real code email that will "
+                        "fail). ~5 Zenros credits per probe attempt.")
+    p.add_argument("--probe-retries", type=int, default=5,
+                   help="max getLoginOptions probe retries via Zenros "
+                        "(default 5, ~90%% success rate given ~30%% per-attempt "
+                        "pass rate). Only used with --probe-via-zenros.")
+    p.add_argument("--probe-country", default="us",
+                   help="Zenros premium_proxy country for the pre-flight probe")
     p.add_argument("--notion-ref", default=nt.NOTION_REF_DEFAULT)
     p.add_argument("--prompt", default="What is 2+2? Answer with just the number.")
     args = p.parse_args()
@@ -437,6 +498,30 @@ def main() -> None:
                     "(test@/admin@) deliver. Continuing anyway.")
             email, mail_url, mail_token, domain = allocate_email(domain)
         log(f"allocated email: {email}  (domain: {domain})")
+
+        # ---- 1.5. pre-flight probe via Zenros (optional) ---------------
+        if args.probe_via_zenros:
+            probe_email, probe_res = probe_via_zenros(
+                email, max_retries=args.probe_retries,
+                proxy_country=args.probe_country)
+            if not probe_email:
+                sys.exit(f"probe-via-zenros: all {args.probe_retries} attempts "
+                         f"hit captcha; aborting to save code-email reputation "
+                         f"cost. Last email tried: {probe_res.get('last_email')}. "
+                         f"Re-run without --probe-via-zenros to skip the probe "
+                         f"(will then send a real code email from the extension).")
+            if probe_email != email:
+                # Rotated to a passing email on v3-mail worker subdomain
+                email = probe_email
+                cfg = MAIL_DOMAINS["v3"]
+                mail_url = (f"{cfg['worker']}/emails?address="
+                            f"{urllib.parse.quote(email, safe='@')}"
+                            f"&limit=10&include_body=true")
+                mail_token = cfg["token"]
+                domain = "v3"
+                log(f"probe passed on rotated email: {email}")
+            else:
+                log(f"probe passed on first email: {email}")
 
         # ---- 2-4. signup via extension, creds over WS -------------------
         creds = run_signup(email, mail_url, mail_token)

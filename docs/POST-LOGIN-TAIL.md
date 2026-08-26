@@ -368,6 +368,12 @@ Assumes only: daemon running + extension connected.
 python3 backend/notion_e2e.py                     # fresh email, 2 workspaces
 python3 backend/notion_e2e.py --workspaces 3      # N workspaces, each fully provisioned
 python3 backend/notion_e2e.py --email-domain v4   # force v3/v4/apex rotation step
+python3 backend/notion_e2e.py --probe-via-zenros  # pre-flight: probe getLoginOptions
+                                                  # via Zenros until PASS, saves
+                                                  # code-email reputation cost on
+                                                  # captcha-gated emails (rotates
+                                                  # to a passing email instead of
+                                                  # sending a real code email)
 python3 backend/notion_e2e.py --no-signup --session backend/sessions/x.json --workspaces 3
                                                   # idempotent re-run (converges to goal state)
 ```
