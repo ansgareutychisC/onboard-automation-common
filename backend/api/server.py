@@ -137,7 +137,9 @@ def create_app(db: DB | None = None, runner: JobRunner | None = None,
         row = db.one("SELECT id FROM accounts WHERE id=?", (aid,))
         if not row:
             raise HTTPException(404, f"account {aid} not found")
-        db.execute("DELETE FROM accounts WHERE id=?", (aid,))
+        n = db.execute("DELETE FROM accounts WHERE id=?", (aid,))
+        if not n:
+            raise HTTPException(404, f"account {aid} vanished before delete")
         db.add_event("account_deleted", detail={"account_id": aid})
         return {"deleted": aid}
 

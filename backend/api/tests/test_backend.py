@@ -309,29 +309,49 @@ class TestRunner:
 
     def test_tail_all_steps_failed_marks_account_failed(self, db, fake,
                                                         monkeypatch):
-        """A tail whose every step errors must NOT claim provisioned."""
-        class AllErrorFake(FakeDriver):
-            def provision(self, creds, path, opts, on_event=lambda k, d: None):
-                on_event("step", {"label": "ws1:x", "result": {"error": "e"}})
-                return {"outcomes": [{"label": "ws1:x",
-                                      "result": {"error": "e"}}],
-                        "session": {}}
+        """A tail whose CORE steps error must NOT claim provisioned;
+        optional x-steps failing alone must NOT claim failed either."""
+        class MixFake(FakeDriver):
+            def __init__(self, core_error):
+                super().__init__()
+                self.core_error = core_error
 
-        monkeypatch.setitem(drvmod.REGISTRY, "notion",
-                            fake_driver_class(AllErrorFake()))
-        r = JobRunner(db, "notion")
-        r.start()
-        try:
-            aid = db.upsert_account_from_creds(CREDS)
-            jid = r.enqueue("tail", {"account_id": aid})
-            assert wait_job(db, jid) == "done"   # job ran, but…
-            assert db.one("SELECT status FROM accounts WHERE id=?",
-                          (aid,))["status"] == "failed"
-            item = db.one("SELECT status FROM job_items WHERE job_id=?",
-                          (jid,))
-            assert item["status"] == "failed"
-        finally:
-            r.stop()
+            def provision(self, creds, path, opts, on_event=lambda k, d: None):
+                outcomes = []
+                if self.core_error:
+                    outcomes.append({"label": "ws1:trial",
+                                     "result": {"error": "ip-blocked"}})
+                else:
+                    outcomes.append({"label": "ws1:chat",
+                                     "result": {"reply": "4"}})
+                # an optional step errors in BOTH cases — must not decide
+                outcomes.append({"label": "x:skill",
+                                 "result": {"error": "PostgresUniqueViolation"}})
+                on_event("step", {"label": outcomes[-1]["label"], "result": outcomes[-1]["result"]})
+                return {"outcomes": outcomes, "session": {}}
+
+        for core_error, want in ((True, "failed"), (False, "provisioned")):
+            monkeypatch.setitem(drvmod.REGISTRY, "notion",
+                                fake_driver_class(MixFake(core_error)))
+            db2 = DB(str(tmp_path_dir := f"/tmp/mixfake_{core_error}.db"))
+            r = JobRunner(db2, "notion")
+            r.start()
+            try:
+                aid = db2.upsert_account_from_creds(CREDS)
+                jid = r.enqueue("tail", {"account_id": aid})
+                assert wait_job(db2, jid) == "done"   # job ran to completion
+                assert db2.one("SELECT status FROM accounts WHERE id=?",
+                               (aid,))["status"] == want
+                item = db2.one("SELECT status, detail_json FROM job_items"
+                               " WHERE job_id=?", (jid,))
+                assert item["status"] == ("failed" if core_error else "done")
+                detail = json.loads(item["detail_json"])
+                assert detail["core_step_errors"] == (
+                    ["ws1:trial"] if core_error else [])
+                assert detail["optional_step_errors"] == ["x:skill"]
+            finally:
+                r.stop()
+                os.unlink(tmp_path_dir)
 
     def test_chat_job_persists_thread(self, db, runner):
         aid = db.upsert_account_from_creds(CREDS)
@@ -479,7 +499,7 @@ class TestAPI:
                      ).json()["token_v2"] == CREDS["tokenV2"]
 
     def test_validation_edges(self, client):
-        c, _ = client
+        c, db = client
         assert c.post("/api/batch", json={"count": 0}).status_code == 422
         assert c.post("/api/batch", json={"count": 99}).status_code == 422
         assert c.post("/api/batch",
@@ -490,12 +510,13 @@ class TestAPI:
                       ).status_code == 422
         assert c.post("/api/signup", json={"attempts": 0}).status_code == 422
         assert c.post("/api/signup", json={"attempts": 11}).status_code == 422
-        aid = c.get("/api/accounts").json()
-        if aid:
-            assert c.post(f"/api/accounts/{aid[0]['id']}/chat",
-                          json={"prompt": ""}).status_code == 422
-            assert c.post(f"/api/accounts/{aid[0]['id']}/tail",
-                          json={"workspaces": 9}).status_code == 422
+        aid = db.upsert_account_from_creds(CREDS)
+        assert c.post(f"/api/accounts/{aid}/chat",
+                      json={"prompt": ""}).status_code == 422
+        assert c.post(f"/api/accounts/{aid}/chat",
+                      json={"prompt": "x" * 4001}).status_code == 422
+        assert c.post(f"/api/accounts/{aid}/tail",
+                      json={"workspaces": 9}).status_code == 422
 
     def test_chat_endpoint(self, client):
         c, db = client
@@ -545,12 +566,13 @@ class TestAPI:
         res2 = c.post(f"/api/accounts/{aid}/export-session")
         assert res2.json()["created"] is False
 
-    def test_export_session_incomplete_creds_409(self, client, monkeypatch):
+    def test_export_session_incomplete_creds_409(self, client, tmp_path,
+                                                monkeypatch):
         c, db = client
         aid = db.execute(
             "INSERT INTO accounts (email, status, created_at)"
             " VALUES ('x@y.z','created','now')")
-        monkeypatch.setattr(config, "SESSIONS_DIR", "/tmp/sess-409")
+        monkeypatch.setattr(config, "SESSIONS_DIR", str(tmp_path / "sess"))
         assert c.post(f"/api/accounts/{aid}/export-session"
                       ).status_code == 409
 

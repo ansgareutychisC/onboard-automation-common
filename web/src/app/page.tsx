@@ -51,7 +51,7 @@ import { useToast } from '@/hooks/use-toast';
 /* ------------------------------------------------------------------ misc */
 
 function statusBadge(s: string) {
-  const map: Record<string, string> = {
+  const map: Record<string, React.ComponentProps<typeof Badge>["variant"]> = {
     provisioned: 'default',
     created: 'secondary',
     failed: 'destructive',
@@ -675,6 +675,7 @@ function EffortSelect({ value, onChange, model }: {
 }
 
 function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
+  const { toast } = useToast();
   const [open, setOpen] = useState(false);
   const [items, setItems] = useState<Job['items']>([]);
 
@@ -718,7 +719,18 @@ function JobRow({ job, onChanged }: { job: Job; onChanged: () => void }) {
             size="sm"
             className="text-destructive text-xs underline h-auto py-0"
             onClick={async () => {
-              await api.cancelJob(job.id).catch(() => {});
+              try {
+                const r = await api.cancelJob(job.id);
+                if (!r.cancelled) {
+                  toast({ title: `Job #${job.id} already ${job.status}` });
+                }
+              } catch (e) {
+                toast({
+                  title: 'Cancel failed',
+                  description: String(e),
+                  variant: 'destructive',
+                });
+              }
               onChanged();
             }}
           >

@@ -26,7 +26,7 @@ from typing import Any
 
 from .. import config
 from .base import (ChatOptions, ServiceDriver, SignupOptions, TailOptions,
-                   _noop)
+                   _never_cancel, _noop)
 
 _WARM_JS = os.path.join(config.SCRIPTS_DIR, "notion_signup_warm.js")
 _MODELS_JSON = os.path.join(config.BACKEND_DIR, "notion_models_live.json")
@@ -78,7 +78,7 @@ class NotionDriver(ServiceDriver):
 
     # ------------------------------------------------------------ signup
     def signup(self, opts: SignupOptions, on_event=_noop,
-               cancel_fn=None) -> dict:
+               cancel_fn=_never_cancel) -> dict:
         out = os.path.join(config.DATA_DIR,
                            f"warm_creds_{os.getpid()}_{int(time.time())}.json")
         cmd = ["node", _WARM_JS, "--attempts", str(opts.attempts),
@@ -96,7 +96,7 @@ class NotionDriver(ServiceDriver):
             # to kill a live warm-signup instead of blocking the single
             # runner thread for up to 15 minutes
             proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, env=env, cwd=config.REPO_ROOT)
             deadline = time.time() + 900
             while True:

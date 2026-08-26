@@ -74,8 +74,9 @@ class JobRunner:
             self._thread.start()
 
     def stop(self) -> None:
-        self._stop.set()
-        self._q.put(-1)
+        with self._lock:
+            self._stop.set()
+            self._q.put(-1)
         if self._thread and self._thread is not threading.current_thread():
             self._thread.join(timeout=5)
 
@@ -118,6 +119,11 @@ class JobRunner:
                     self.db.set_job(jid, status="failed",
                                     error=f"{type(e).__name__}: {e}"[:500],
                                     finished_at=self._ts())
+                    # also fail any in-flight item so the UI shows no zombie
+                    self.db.execute(
+                        "UPDATE job_items SET status='failed', updated_at=?"
+                        " WHERE job_id=? AND status IN ('running','pending')",
+                        (self._ts(), jid))
                 except Exception:                        # noqa: BLE001
                     pass
                 traceback.print_exc()
@@ -253,20 +259,35 @@ class JobRunner:
             out = driver.provision(creds, spath, to, on_event=on_event)
             self.db.sync_session(aid, out["session"])
             self.db.touch_account_session(aid, spath)
-            errs = [o["label"] for o in out["outcomes"]
-                    if isinstance(o.get("result"), dict)
-                    and o["result"].get("error")]
-            # a tail whose every step errored must NOT report success:
-            # item failed + account stays non-provisioned
-            self.db.set_job_item(item, "failed" if errs else "done",
-                                 {"steps": len(out["outcomes"]),
-                                  "step_errors": errs})
+            # CORE steps (workspace/trial/apikey/chat per workspace, from
+            # e2e.run_tail) decide the account status; the optional x-steps
+            # (models/page/instruct/skill) only degrade to 'degraded', not
+            # 'failed' — an account with a healthy workspace+key+chat is
+            # provisioned even if a skill-page assignment 400'd.
+            def _is_core(label: str) -> bool:
+                return not label.startswith("x:")
+
+            core_errs = [o["label"] for o in out["outcomes"]
+                         if _is_core(o["label"])
+                         and isinstance(o.get("result"), dict)
+                         and o["result"].get("error")]
+            opt_errs = [o["label"] for o in out["outcomes"]
+                        if not _is_core(o["label"])
+                        and isinstance(o.get("result"), dict)
+                        and o["result"].get("error")]
+            self.db.set_job_item(
+                item, "failed" if core_errs else "done",
+                {"steps": len(out["outcomes"]),
+                 "core_step_errors": core_errs,
+                 "optional_step_errors": opt_errs})
             self.db.set_account_status(
-                aid, "provisioned" if not errs else "failed", spath)
-            self.db.add_event("tail_ok" if not errs else "tail_partial",
-                              account_id=aid, job_id=jid,
-                              detail={"steps": len(out["outcomes"]),
-                                      "errors": errs})
+                aid, "failed" if core_errs else "provisioned", spath)
+            self.db.add_event(
+                "tail_ok" if not core_errs else "tail_partial",
+                account_id=aid, job_id=jid,
+                detail={"steps": len(out["outcomes"]),
+                        "core_errors": core_errs,
+                        "optional_errors": opt_errs})
             return out
         except Exception as e:
             self.db.set_job_item(item, "failed", {"error": str(e)[:300]})

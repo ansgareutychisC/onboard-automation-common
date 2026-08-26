@@ -281,13 +281,13 @@ class DB:
                     continue
                 # derive kind from prompt assignments (instruction/skill
                 # pages carry a prompt row; plain pages stay 'page');
-                # upgrade-only, never downgrade a known kind
+                # upgrade-only: fill NULL/'page', never overwrite a known kind
                 kind = (prompts.get(pid) or {}).get("promptType") or "page"
                 row = c.execute(
                     "SELECT id, kind FROM pages WHERE account_id=? AND"
                     " page_id=?", (aid, pid)).fetchone()
                 if row:
-                    if kind != "page" and row["kind"] != kind:
+                    if row["kind"] in (None, "page") and kind != "page":
                         ex("UPDATE pages SET kind=? WHERE id=?",
                            (kind, row["id"]))
                     continue
@@ -449,7 +449,8 @@ def session_path_for(aid: int, email: str) -> str:
 
 
 def creds_from_account(row: dict) -> dict:
-    """Regenerate a notion_tail creds dict from an account row (replay)."""
+    """Build a notion_tail creds dict from an account row (replay entry:
+    token/user/device suffice — load_session rebuilds cookies itself)."""
     return {
         "email": row["email"],
         "userId": row["user_id"],

@@ -69,7 +69,7 @@ is WHY the web UX must go through the gateway), `ONBOARD_API_PORT`,
 | POST | `/api/accounts/{id}/export-session` | regenerate the notion_tail session file from stored creds (session replay) |
 | POST | `/api/signup` | `{email?, country, attempts, run_tail, tail:{workspaces, chat_prompt, route, workspace_name, trial_pace_s}}` → `{job_id}` |
 | POST | `/api/batch` | `{count 1..10, countries:[..], cooldown_seconds, attempts, tail:{..}}` → `{job_id}` |
-| POST | `/api/accounts/{id}/tail` | `{workspaces, chat_prompt, route}` → `{job_id}` (idempotent) |
+| POST | `/api/accounts/{id}/tail` | `{workspaces, chat_prompt, route, workspace_name, trial_pace_s}` → `{job_id}` (idempotent) |
 | POST | `/api/accounts/{id}/chat` | `{prompt, model?, effort?, space_id?, context_page_id?, thread_id?, route}` → `{job_id}` |
 | GET | `/api/jobs?limit=50` · `/api/jobs/{id}` | queue + per-item progress (interactive docs: `/api/docs`) |
 | POST | `/api/jobs/{id}/cancel` | cooperative cancel (checked between accounts / during cooldown) |
@@ -87,7 +87,11 @@ progress lands in `job_items.detail` (streamed step results) + `events`.
 - **Failure isolation**: one account's failure inside a batch marks that
   item failed and continues; the job itself ends `done` with a summary item.
 - **Idempotent tail**: re-running reuses existing workspaces, skips active
-  trials and valid api keys, appends new chat turns.
+  trials and valid api keys, appends new chat turns. Account status after a
+  tail is decided by CORE steps only (workspace/onboarding/trial/apikey/
+  chat per workspace); optional x-steps (models/page/instruct/skill) failing
+  alone leaves the account `provisioned` with `optional_step_errors`
+  recorded on the job item.
 - **Credential persistence**: accounts row stores token_v2 (JWT), full
   cookie jar, device id, client version — everything needed to replay.
 - **IP hygiene** (SKILL.md §9.5): `signup_ip`, `proxy_country`,

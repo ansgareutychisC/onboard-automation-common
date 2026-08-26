@@ -866,8 +866,11 @@ NODE_PATH=$(npm root -g) node tests/test_toy_signup_e2e.js       # FULL signup +
 #   optionally start the toy site and run the _shared/self-test preset first
 
 # 7. Optional: start the dev daemon (WS bridge + curl-able remote control)
-python3 python-dev-daemon/bridge.py --port 3000
-# connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
+#    NOTE: the web dashboard (step 8) occupies :3000 in the sandbox — run
+#    the legacy daemon on ANOTHER port when both are up, and point the
+#    extension's serverUrl at it (e.g. ws://127.0.0.1:3002).
+python3 python-dev-daemon/bridge.py --port 3002
+# connect the extension: ws://127.0.0.1:3002 (or wss://<preview-host>/ via a gateway)
 
 # 8. Start the PRODUCTIZED BACKEND (API-first, 127.0.0.1:3001) — the
 #    current main workstream (docs/BACKEND-API.md). Needs python deps

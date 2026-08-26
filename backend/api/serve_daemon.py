@@ -57,7 +57,12 @@ def main() -> None:
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
-        pid = open(PID).read().strip() if os.path.exists(PID) else "?"
+        pid = "?"
+        try:
+            raw = open(PID).read().strip()
+            pid = f"{raw} ({'ALIVE' if _pid_alive(int(raw)) else 'stale'})"
+        except (OSError, ValueError):
+            pass
         sys.exit(f"another API instance holds {LOCK} (pid file says {pid})")
     # the flock must SURVIVE daemonization — inherit via the fork chain by
     # keeping `lock` referenced in the daemon process

@@ -153,10 +153,12 @@ export const api = {
   deleteAccount: (id: number) =>
     req<{ deleted: number }>(`/api/accounts/${id}`, { method: "DELETE" }),
   exportSession: (id: number) =>
-    req<{ session_path: string; email: string; has_token: boolean }>(
-      `/api/accounts/${id}/export-session`,
-      { method: "POST" },
-    ),
+    req<{
+      session_path: string;
+      email: string;
+      has_token: boolean;
+      created: boolean;
+    }>(`/api/accounts/${id}/export-session`, { method: "POST" }),
   signup: (body: Record<string, unknown>) =>
     req<{ job_id: number }>("/api/signup", {
       method: "POST",
