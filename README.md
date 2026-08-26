@@ -54,6 +54,17 @@ onboard-automation-common/
 │           ├── activate-trial.json     # 14-day trial (needs hCaptcha token)
 │           ├── create-api-key.json     # PAT creation
 │           └── full-onboarding.json    # full signup → onboarded (36 steps)
+├── backend/                            # PRODUCTIZED BACKEND (API-first)
+│   ├── api/                            # FastAPI :3001 — jobs, batch, credential store
+│   │   ├── server.py                   #   REST surface (docs/BACKEND-API.md)
+│   │   ├── runner.py                   #   sequential queue + pacing + cancel
+│   │   ├── db.py                       #   SQLite: creds, signup IPs, audit trail
+│   │   ├── drivers/                    #   ServiceDriver ABC + NotionDriver
+│   │   └── tests/                      #   24 pytest tests
+│   ├── notion_tail.py                  # post-signup tail (workspace/trial/key/chat)
+│   ├── notion_e2e.py                   # one-script E2E (extension or warm route)
+│   └── sessions/                       # per-account session files (gitignored)
+├── web/                                # Next.js 16 dashboard (consumes the API)
 ├── python-dev-daemon/
 │   └── bridge.py                       # local dev daemon: WS bridge + curl-able /api/command
 ├── tests/
@@ -78,9 +89,8 @@ onboard-automation-common/
 
 1. **Standalone (default)** — `serverUrl` empty. Run macros from the popup;
    optionally persist runs to Turso if configured. No backend, no WS.
-2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:8787`.
-   Agent-driven interactive debugging. Local only. (Daemon not yet ported —
-   Phase 1 leftover.)
+2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:3000`.
+   Agent-driven interactive debugging via `python-dev-daemon/bridge.py`.
 3. **Production via CF Worker (HTTP, Phase 2)** — polls `/api/poll`, POSTs
    `/api/result`. No WS, no Durable Objects.
 
@@ -160,14 +170,23 @@ or a CF API token).
   real service
 - ✅ Python dev daemon (`python-dev-daemon/bridge.py`) — WS bridge +
   curl-able `POST /api/command` remote control, verified end-to-end
-- 🔲 Live Notion signup verification in a real browser (needs user-side
-  testing: hCaptcha enterprise + real email delivery to `*@priv.email`)
+- ✅ **Notion onboarding FULLY AUTOMATED sandbox-side** — warm Zenrows
+  Browser Session signup (one session-pinned residential IP satisfies
+  Notion's csrfState IP-binding) + the productized backend: real accounts
+  provision end-to-end (workspace → biz trial → `ntn_` key → instruction/
+  skill pages → chat) with zero clicks, zero extension. Live-verified
+  through the REST API AND the web dashboard (see docs/BACKEND-API.md).
+- 🔲 Extension user-side live test (optional — the warm route already
+  covers signup sandbox-side; extension = deterministic credit-free fallback)
 - 🔲 Supabase macro (`macros/supabase/signup.json` — hCaptcha solved by user)
 - 🔲 Todoist macro (`macros/todoist/signup.json` — pure HTTP, no DOM)
 - 🔲 Phase 2: CF Worker dashboard (HTTP-only, reads the same Turso DB)
 
 ## Documentation
 
+- **[docs/BACKEND-API.md](docs/BACKEND-API.md)** — the productized backend:
+  full API reference, batch semantics, credential/IP persistence model.
+- **[web/README.md](web/README.md)** — the Next.js dashboard.
 - **[docs/REVAMP-PLAN.md](docs/REVAMP-PLAN.md)** — the full plan with all 5
   open questions answered; §6 has the step-by-step.
 - **[docs/MACROS.md](docs/MACROS.md)** — macro format reference, the shared

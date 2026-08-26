@@ -424,7 +424,7 @@ after every refactor.
 │   - Turso HTTP client (lib/turso.js — no-op when not configured)   │
 │                                                                    │
 │   Config (chrome.storage.local):                                   │
-│   - serverUrl (empty=standalone; ws://127.0.0.1:8787=dev daemon)   │
+│   - serverUrl (empty=standalone; ws://127.0.0.1:3000=dev daemon)   │
 │   - emailWorkerUrl, emailWorkerToken (per-domain)                  │
 │   - tursoUrl, tursoToken (optional persistence)                    │
 └────────────────────────────────────────────────────────────────────┘
@@ -459,7 +459,7 @@ after every refactor.
 **Three connection modes (mutually compatible):**
 1. **Standalone** (default) — `serverUrl` empty. Runs macros from popup,
    writes to Turso if configured. MVP distribution shape.
-2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:8787`.
+2. **Dev/debug via Python daemon (WS)** — `serverUrl = ws://127.0.0.1:3000`.
    Agent-driven interactive work. Local dev only.
 3. **Production via CF Worker (HTTP, Phase 2)** — polls `/api/poll`,
    POSTs `/api/result`. No WS.
@@ -522,11 +522,12 @@ after every refactor.
   "stale" (see §1.5)
 
 ### Next
-1. **Live Notion test (USER-SIDE — the only remaining integration step)** —
-   load extension in Chrome (defaults are pre-filled), run `notion/signup`.
-   **Use `*@priv.email` addresses, not privatimail.com (blocked by Notion).**
-   Everything machine-testable has been tested — including a full signup
-   flow on the toy site.
+1. **Notion signup is SOLVED sandbox-side** (warm Zenrows Browser Session,
+   live-verified through the productized API + web UI — accounts provision
+   fully unattended). The extension remains the deterministic, credit-free
+   fallback when the user's browser is connected; a user-side live test of
+   it is OPTIONAL now, not blocking. **Use `*@priv.email` addresses, not
+   privatimail.com (blocked by Notion).**
 2. **Then supabase** — write `macros/supabase/signup.json` (needs the
    extension — hCaptcha required; user solves it manually, form
    auto-submits).
@@ -767,7 +768,25 @@ onboard-automation-common/
 ├── docs/
 │   ├── REVAMP-PLAN.md            ← the full plan, all questions answered
 │   ├── MACROS.md                 ← macro format reference + chunk pattern
-│   └── EXTENSION-VS-CHROME-RD.md ← extension vs raw CDP analysis
+│   ├── EXTENSION-VS-CHROME-RD.md ← extension vs raw CDP analysis
+│   ├── BACKEND-API.md            ← the productized API reference (:3001)
+│   ├── POST-LOGIN-TAIL.md        ← the post-signup master recipe
+│   ├── NOTION-REST-AUTH.md       ← pure-REST signup recipe
+│   └── ZENROWS-EVAL.md           ← Zenrows capability matrix (+ addenda)
+├── backend/
+│   ├── api/                      ← PRODUCTIZED BACKEND (API-first, :3001)
+│   │   ├── server.py             ← FastAPI surface (docs/BACKEND-API.md)
+│   │   ├── runner.py             ← sequential job queue + pacing + cancel
+│   │   ├── db.py                 ← SQLite credential/IP store (WAL)
+│   │   ├── config.py             ← paths/keys/pacing defaults (env-overridable)
+│   │   ├── serve_daemon.py       ← double-fork launcher (flock-guarded)
+│   │   ├── drivers/              ← ServiceDriver ABC + NotionDriver
+│   │   ├── tests/                ← 24 pytest tests (db/runner/api)
+│   │   └── data/onboard.db       ← THE credential store (committed: git-as-disk)
+│   ├── notion_tail.py            ← post-signup tail driver (CLI + library)
+│   ├── notion_e2e.py             ← one-script E2E (extension or warm route)
+│   └── sessions/                 ← per-account session files (gitignored)
+├── web/                          ← Next.js 16 dashboard source (consumes :3001)
 ├── extension/                    ← the actual Chrome MV3 extension (Phase 1)
 │   ├── manifest.json             ← "Onboard Automation Bridge" v0.9.1, ES module
 │   ├── background.js             ← macro runner + 23 cmd handlers + WS (gated) + quickExec
@@ -847,11 +866,47 @@ NODE_PATH=$(npm root -g) node tests/test_toy_signup_e2e.js       # FULL signup +
 #   optionally start the toy site and run the _shared/self-test preset first
 
 # 7. Optional: start the dev daemon (WS bridge + curl-able remote control)
-python3 python-dev-daemon/bridge.py --port 3000
-# connect the extension: ws://127.0.0.1:3000 (or wss://<preview-host>/ via a gateway)
+#    NOTE: the web dashboard (step 8) occupies :3000 in the sandbox — run
+#    the legacy daemon on ANOTHER port when both are up, and point the
+#    extension's serverUrl at it (e.g. ws://127.0.0.1:3002).
+python3 python-dev-daemon/bridge.py --port 3002
+# connect the extension: ws://127.0.0.1:3002 (or wss://<preview-host>/ via a gateway)
+
+# 8. Start the PRODUCTIZED BACKEND (API-first, 127.0.0.1:3001) — the
+#    current main workstream (docs/BACKEND-API.md). Needs python deps
+#    (backend/api/requirements.txt) + the notion-ref clone (step 3, NOT
+#    optional for this) + global playwright for the warm signup.
+python3 backend/api/serve_daemon.py          # double-fork daemon; logs backend/api/data/api.log
+curl -s localhost:3001/api/health            # deps: node/playwright/ref/zenrows all true?
+python3 -m pytest backend/api/tests -q       # 24 unit/integration tests
+# stop: kill $(cat backend/api/data/api.pid)
+# web dashboard: Next.js on :3000 (copy web/ over the platform project),
+# reachable via the Caddy :81 gateway; its fetches use ?XTransformPort=3001
 ```
 
-## 9. When in doubt
+### 8.8 Backend ops gotchas (2026-08-26 session — hard-won)
+
+- **`notion_tail` CLI helpers `sys.exit()`** (missing api key / page id /
+  config). In-process calls therefore raise `SystemExit` — a
+  *BaseException* that KILLS a background thread silently. The API runner
+  guards this (loop-level BaseException catch + driver `_safe` wrapper);
+  NEVER call those helpers unguarded from threads. Regression test:
+  `test_systemexit_does_not_kill_runner`.
+- **Container recycles kill the double-forked API daemon** (mid-session,
+  twice observed). The DB survives on disk; on restart
+  `recover_stale_jobs()` marks interrupted jobs failed ON PURPOSE — don't
+  "fix" that, just re-enqueue. Single-instance guard: flock on
+  `backend/api/data/api.lock` (a second launch aborts before corrupting
+  the live one's job state).
+- **Web fetches MUST go through the Caddy :81 gateway** with
+  `?XTransformPort=3001` — never `http://localhost:3001` from the browser
+  (the gateway rule; hitting :3000 directly 404s).
+- **One runner thread by design**: parallel jobs would fight over the one
+  Zenrows browser slot + per-IP rate limits. Batch throughput = retries
+  inside signup (new session = new IP + new email on captcha) + cooldown
+  between accounts (default 45 s, floor 0 enforced by validation).
+
+### 8.9 When in doubt
 
 - **Read the code, not the docs.** The docs (including this one) may be
   stale. The code is the truth.
@@ -861,3 +916,161 @@ python3 python-dev-daemon/bridge.py --port 3000
   you don't.
 - **Don't re-live stabilization.** If a bug looks familiar, it's probably
   in the notion repo's commit history with a fix. Search there first.
+
+## 9. The universal playbook: crack it with a real browser, then productize headless
+(Generalized 2026-08-26 from the Notion onboarding campaign — applies to ANY
+gated web service. The Notion specifics live in the sections above + docs/.)
+
+### 9.1 The maturity ladder — and why you MUST climb it in order
+
+```
+L0  manual          human clicks the UI                     (0% reusable)
+L1  real-browser    extension drives a REAL browser on the  (100% success,
+    + extension     user's residential IP + SW fetch           0% server-side)
+L2  headless study  decode the protocol from L1 captures    (knowledge)
+L3  hybrid backend  replay via direct HTTP; route the       (90%+, server-
+    + clean relays  IP-gated mutations through relays         side, gated ops)
+L4  fully program-  one warm remote browser (or pure REST)  (near-certain, server-
+    atic            satisfies stateful IP bindings            side, no USER-side
+                                                   browser needed; ~30-50%
+                                                   per attempt, internal
+                                                   retry-rotation)
+```
+
+**The core pragma: crack first, study second, productize third.** L1 is not
+a prototype to skip — it is the ONLY route that is guaranteed to work on day
+one (a real Chrome on a residential IP with a real human's reputation is
+indistinguishable from the user). Its real value is dual:
+
+1. it delivers VALUE immediately (accounts get created while you study), and
+2. it is your instrumentation platform — every L1 run captures ground truth
+   (HAR, macro logs, response dumps) that L2 decodes at leisure.
+
+Never attempt L3/L4 blind: without L2's captured ground truth you will
+mis-guess request shapes (headers drift, hidden ops, wrapped errors) and
+burn the resource you can't recharge — IP/email reputation.
+
+**Criteria for advancing a level:** advance an OPERATION (not the whole
+service) to L3 only after you hold (a) a live captured request-response pair
+from L1, (b) a replay that reproduces it from curl/python, and (c) knowledge
+of which gate (see 9.2) protects it. Advance to L4 only when stateful IP
+binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
+
+### 9.2 The anti-bot gate taxonomy (classify EVERY blocker before fighting it)
+
+1. **Server-side metadata scoring** — the decision is made at the FIRST
+   touch (Notion example: the getLoginOptions probe), from request
+   metadata: IP reputation
+   × email-newness × rate. Empirical signature: the challenge (hCaptcha etc.)
+   appears in the FIRST response, before any DOM interaction. Consequence:
+   behavioral humanization (mouse moves, typing rhythm, `js_render`
+   instructions) is USELESS — only IP/email/identity rotation changes the
+   outcome. The gate is usually PROBABILISTIC, not binary: ~30-50%/attempt
+   on fresh identities via clean residential IPs → N retry-with-rotation
+   reaches arbitrary confidence.
+2. **Stateful IP binding** — multi-step auth flows bind intermediate state
+   (Notion example: csrfState; generally: nonce/challenge) to the IP that
+   CREATED it; submitting from a different
+   IP → 422. Signature: every step succeeds in isolation but the final
+   submit fails from rotating-IP relays. Fix: ONE stable IP across the
+   whole flow — either a real browser (L1) or a session-pinned remote
+   browser (L4). Per-call-rotating premium proxies are structurally WRONG
+   for these flows.
+3. **Plan-gated vendor params** — proxy/scraping vendors gate advanced
+   features (IP pinning like `session_id`, long TTLs) behind paid tiers;
+   lower tiers return empty replies, connection drops, or validation errors
+   on the parameter itself instead of a clean permission error (observed
+   both: session_id → empty reply; session_ttl → REQS004 invalid value).
+   Signature: "Empty reply from server" on a parameter the docs say exists.
+   Fix: don't fight the plan — find the feature that IS included (e.g.
+   Browser Sessions on the free tier) or restructure the flow so the
+   un-gated feature suffices.
+4. **Rate/cooldown economics** — both the target (per-IP + per-email
+   rate limits, 429s that tighten within minutes) and your vendor
+   (session-creation storms → ~4-min cooldowns; abandoned sessions linger
+   until TTL expiry occupying the concurrency slot). Fix: pace everything;
+   sleep between resource-creating mutations (15 s between trial-style
+   activations, 45-60 s between account signups, 12-15 s between proxy
+   reconnects); ALWAYS release resources in `finally`.
+5. **TLS/JA3 + fingerprint variance** — headless-default TLS stacks and
+   UA/header orders are detectable. Cheap mitigations: let a real Chrome
+   engine do the talking (CDP remote browsers), or rely on vendors that
+   terminate TLS themselves (their JA3 is their own reputation problem).
+   Isolating JA3 as a variable is hard; treat it as background noise and
+   fix 9.2.1-9.2.4 first — in practice they dominate.
+
+### 9.3 The transport toolbox — pick per operation class, not per service
+
+| Transport | IP story | Best for | Structural weakness |
+|---|---|---|---|
+| Extension on user's browser (SW fetch) | user's residential IP, deterministic | L1 cracking; flows with 9.2.2 binding; credit-free | requires user's machine online |
+| Vendor Fetch API (Zenrows &co) | rotates residential IP PER CALL | single-shot mutations gated by 9.2.1 (trial activation, one-off writes) | per-call rotation BREAKS 9.2.2 flows |
+| Vendor Browser Session (CDP `wss://`) | ONE session-pinned residential IP (stable across pages/in-page fetches/idle) | L4 whole-auth flows (signup/login with email codes); OTP waits | single concurrent slot on cheap tiers; 180 s default TTL; connect-storm cooldowns |
+| Edge functions (supabase/netlify) | 1000s of cloud IPs, region-pinnable | region-axis experiments; reaching vendor-blocked hosts; NOT a Cloudflare-WAF bypass (cloud ASN) | cloud ASN reputation; changes hop-1 only |
+
+Empirical vendor rules that transfer (examples from Zenrows — check YOUR
+vendor's equivalents; Zenrows-specifics in §Zenrows):
+- `custom_headers` became a BOOLEAN — headers ride the vendor request;
+  `Accept-Encoding: identity` is MANDATORY or you get gzip garbage at 200.
+- Vendor error codes masquerade as target errors (`RESP001` "premium
+  proxies" looks like the target's 400 validation error) — wrap calls,
+  detect vendor-error signatures, retry 4× with backoff BEFORE concluding
+  the target rejected you.
+- Vendors block some hosts outright (REQS001) — never route your IP-echo
+  or metadata calls through them; test vendor liveness with the actual
+  target host.
+- Remote browsers block most IP-echo sites by policy — echo via the
+  TARGET's own same-origin endpoints (`/cdn-cgi/trace` on any Cloudflare
+  site) — this is also the exact exit IP the target sees: ground truth.
+- Billing: browser sessions bill per-minute + per-GB — block images/fonts/
+  stylesheets/media via routing; a whole signup fits in ~10-20 credits.
+
+### 9.4 OTP/email infrastructure (the hidden single point of failure)
+
+- Prefer a domain YOU control with a worker-backed catch-all subdomain:
+  unlimited fresh addresses (fresh = new identity to 9.2.1 scoring) with
+  programmatic read access. Beware MX topology: an apex-domain catch-all
+  may forward elsewhere and BYPASS your worker — only the worker subdomain
+  gives you API-readable mail for arbitrary locals; named aliases may
+  dual-deliver. Know which form the worker stores (`to_address`).
+- Poll for codes from the DRIVER process (Node/python), never from inside
+  the page (CORS + it dies with the page). Baseline the mailbox id BEFORE
+  triggering the send (avoid picking up stale codes), then poll every ~5 s.
+- Code formats differ per flow on the SAME service (Notion empirics:
+  mixed-case for login, digits-only for signup) — match `[A-Za-z0-9]{4,10}` on the FIRST LINE of
+  the text body, filter by sender+subject keywords, and don't over-fit.
+- During the mail wait the remote browser must stay warm: same-origin
+  heartbeat fetch every ~20 s (keeps the connection pool alive AND logs
+  the exit IP so any mid-flow rotation becomes visible).
+
+### 9.5 IP hygiene doctrine (do this from day one, future-you will thank you)
+
+- **Log the exit IP for every identity-creating mutation** (signup, login,
+  trial activation) — read it from the target's own echo endpoint at the
+  moment of the mutation, and persist IP + region/country + transport +
+  timestamp next to the created account. Even if the current target
+  tolerates IP reuse, the NEXT one won't; retro-fitting is impossible.
+- One signup = one IP = one identity. Track accounts-per-IP so you can
+  spread future signups across regions (`proxy_country` rotation) and
+  avoid stacking burnable identities on one address.
+- Region pinning is a first-class axis: the same vendor key exits through
+  different countries per session (Zenrows: proxy_country); store the
+  country WITH the account.
+- Treat IPs as consumables with reputation half-lives; when a combo starts
+  failing, rotate (new session/new country) rather than retry the same IP.
+
+### 9.6 Decision tree — given an operation on a gated service
+
+1. Does a real-browser L1 driver exist? → USE IT, capture traffic while
+   it runs, ship value today. Keep it as the deterministic fallback forever.
+2. Single-shot mutation, no cross-request state? → L3 direct HTTP;
+   if 9.2.1-gated, relay through a per-call-rotating premium proxy.
+3. Multi-step auth with cross-request state (csrf/nonce)? → needs ONE IP:
+   L4 warm remote browser session (CDP), all steps as same-origin in-page
+   fetches, code polling + heartbeats from the driver process.
+4. Read-only scraping / config refresh? → cheapest transport that returns
+   200; never burn residential credits on reads a datacenter IP can do.
+5. Vendor plan blocks the parameter you need (9.2.3)? → restructure around
+   the included feature set (Browser Sessions instead of session-pinned
+   Fetch) — don't pay-up mid-campaign, and don't code against undocumented
+   plan behavior.

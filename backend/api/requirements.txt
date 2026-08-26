@@ -1,0 +1,15 @@
+# Productized backend (backend/api) — runtime deps
+# Install: pip install -r backend/api/requirements.txt
+# (tests additionally need pytest; the sandbox image ships all of these)
+fastapi>=0.110
+uvicorn>=0.29
+pydantic>=2.6
+
+# --- test-only ---
+pytest>=8.0
+httpx>=0.27          # fastapi TestClient transport
+
+# --- runtime context (NOT pip) ---
+# node + global playwright (warm-signup driver: scripts/notion_signup_warm.js,
+#   NODE_PATH=/home/z/.npm-global/lib/node_modules by default)
+# the notion-ref clone (NOTION_REF_PATH, default ../notion-ref)

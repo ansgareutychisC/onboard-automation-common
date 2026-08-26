@@ -293,6 +293,12 @@ async function extractCookies(context, page) {
         createdAt: Math.floor(Date.now() / 1000),
         isNewSignup: !!lj.isNewSignup,
         route: 'zenrows-browser-session',
+        // IP hygiene: the exact residential exit IP that completed the
+        // whole auth flow (probe→sendcode→login), read from Notion's own
+        // /cdn-cgi/trace right before loginWithEmail.
+        signupIp: ipPre || ip0 || null,
+        proxyCountry: COUNTRY,
+        cookies,                    // full cookie jar for session replay
       };
 
       await browser.close(); browser = null;
