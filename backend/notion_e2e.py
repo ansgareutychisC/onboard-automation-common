@@ -16,6 +16,14 @@ Assumes ONLY: the daemon is running and the extension is connected to it
                                    → sendTemporaryPassword → code via the mail
                                    worker Bearer API → loginWithEmail) on the
                                    user's residential IP. Zero clicks.
+          OR (--signup-route warm) — ONE warm Zenrows Browser Session
+                                   (scripts/notion_signup_warm.js over CDP):
+                                   the whole auth flow runs inside a single
+                                   remote Chrome with ONE session-pinned
+                                   residential IP, which satisfies Notion's
+                                   csrfState IP-binding (the Fetch-API route
+                                   422s because it rotates IPs per call).
+                                   No daemon, no extension, no user.
   4. CREDS over WS               — tokenV2 (JWT) / userId / deviceId /
                                    clientVersion straight from the macro
                                    result — the WS handoff (no Turso needed).
@@ -43,6 +51,10 @@ Usage:
                                                          # Zenros until PASS,
                                                          # saves code-email
                                                          # reputation cost
+  python3 backend/notion_e2e.py --signup-route warm     # sandbox-only signup:
+                                                         # warm Zenrows browser
+                                                         # session (no daemon,
+                                                         # no extension)
   python3 backend/notion_e2e.py --no-signup --session backend/sessions/x.json
                                                          # idempotent re-run
 """
@@ -54,6 +66,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import time
 import urllib.error
@@ -232,6 +245,58 @@ def run_signup(email: str, mail_url: str, mail_token: str) -> dict:
     return creds
 
 
+def run_signup_warm(email: str | None, country: str = "us",
+                    attempts: int = 5) -> dict:
+    """Signup via ONE warm Zenrows Browser Session (sandbox-only route).
+
+    Shells out to scripts/notion_signup_warm.js: connects Playwright over
+    CDP to wss://browser.zenrows.com (a persistent remote Chrome with ONE
+    session-pinned residential IP), drives getLoginOptions →
+    sendTemporaryPassword → (polls v3-mail for the code itself) →
+    loginWithEmail as same-origin in-page fetches, then extracts the
+    HttpOnly cookies (token_v2 & co.) via CDP. The single IP for the whole
+    flow satisfies Notion's csrfState IP-binding — the thing the Fetch-API
+    route cannot do (it rotates IPs per call → loginWithEmail 422s).
+
+    The driver handles email allocation (fresh @v3-mail.priv.email) and
+    captcha rotation internally; pass email=None to let it allocate.
+    Returns the creds dict (email, userId, deviceId, tokenV2,
+    clientVersion, isNewSignup).
+    """
+    script = os.path.join(HERE, "..", "scripts", "notion_signup_warm.js")
+    out = f"/tmp/warm_signup_creds_{os.getpid()}_{int(time.time())}.json"
+    cmd = ["node", script, "--attempts", str(attempts),
+           "--country", country, "--out", out]
+    if email:
+        cmd += ["--email", email]
+    env = dict(os.environ)
+    env.setdefault("NODE_PATH", "/home/z/.npm-global/lib/node_modules")
+    log(f"signup: warm Zenrows browser session — {os.path.basename(script)} "
+        f"(attempts={attempts}, country={country}, email={email or 'auto'})")
+    t0 = time.time()
+    p = subprocess.run(cmd, capture_output=True, text=True, timeout=900,
+                       env=env)
+    dt = time.time() - t0
+    lines = (p.stdout or "").strip().splitlines()
+    for ln in lines[-8:]:
+        log(f"  warm| {ln}")
+    if p.returncode != 0 or not os.path.exists(out):
+        sys.exit(f"warm signup failed (rc={p.returncode}) after {dt:.0f}s. "
+                 f"Driver output (last 30 lines):\n"
+                 + "\n".join(lines[-30:]))
+    with open(out) as f:
+        creds = json.load(f)
+    try:
+        os.unlink(out)
+    except OSError:
+        pass
+    log(f"warm signup done in {dt:.1f}s — "
+        f"userId={str(creds.get('userId'))[:8]}…, "
+        f"isNewSignup={creds.get('isNewSignup')}, "
+        f"tokenV2={len(creds.get('tokenV2') or '')} chars")
+    return creds
+
+
 def probe_via_zenros(email: str, max_retries: int = 5,
                     proxy_country: str = "us") -> tuple[str, dict]:
     """Pre-flight probe: getLoginOptions via Zenros until PASS (no captcha).
@@ -380,9 +445,18 @@ def verdict(sess: dict, outcomes: list[tuple[str, dict]]) -> tuple[bool, list]:
         if not good:
             problems.append(f"{label}: no chat reply captured")
         for c in ws_chats:
-            if '"completed"' not in (c.get("outcome") or ""):
+            # outcome may be a str (legacy) or a dict (current chat step
+            # shape: {"inference_id":…, "status":"completed", …}) — coerce
+            outcome_raw = c.get("outcome")
+            if isinstance(outcome_raw, str):
+                outcome_str = outcome_raw
+            elif outcome_raw:
+                outcome_str = json.dumps(outcome_raw, default=str)
+            else:
+                outcome_str = "none"
+            if "completed" not in outcome_str:
                 problems.append(f"{label}: chat outcome not completed "
-                                f"({(c.get('outcome') or 'none')[:60]})")
+                                f"({outcome_str[:60]})")
     for label, res in outcomes:
         if isinstance(res, dict) and res.get("error"):
             problems.append(f"{label}: {res['error'][:100]}")
@@ -419,7 +493,11 @@ def report(sess: dict) -> None:
                   if c.get("spaceId") == sid]:
             print(f"    chat         : “{c.get('prompt', '')[:48]}”")
             print(f"      → reply    : “{(c.get('reply') or '')[:80]}”")
-            print(f"      outcome    : {(c.get('outcome') or '')[:90]}")
+            outcome_raw = c.get("outcome")
+            outcome_str = (outcome_raw if isinstance(outcome_raw, str)
+                           else json.dumps(outcome_raw, default=str)
+                           if outcome_raw else "")
+            print(f"      outcome    : {outcome_str[:90]}")
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +521,20 @@ def main() -> None:
                    default="auto")
     p.add_argument("--zenrows-key", default=os.environ.get(
         "ZENROWS_API_KEY", nt.ZENROWS_KEY_DEFAULT))
+    p.add_argument("--signup-route", choices=("extension", "warm"),
+                   default="extension",
+                   help="signup driver: 'extension' (daemon WS macro.run, "
+                        "default — needs the user's browser connected) or "
+                        "'warm' (sandbox-only: ONE Zenrows Browser Session "
+                        "keeps a single residential IP across the whole auth "
+                        "flow — no daemon, no extension, no user)")
+    p.add_argument("--warm-attempts", type=int, default=5,
+                   help="max captcha-retry attempts for the warm signup "
+                        "route (default 5; ~30-50%% per-attempt pass rate "
+                        "on fresh v3-mail emails)")
+    p.add_argument("--warm-country", default="us",
+                   help="Zenrows Browser Session proxy_country for the warm "
+                        "signup route (default us)")
     p.add_argument("--probe-via-zenros", action="store_true",
                    help="pre-flight: probe getLoginOptions via Zenros "
                         "premium_proxy=us before triggering the extension "
@@ -473,79 +565,111 @@ def main() -> None:
         email = sess.get("email", "?")
         log(f"tail-only run on existing session {session_path} ({email})")
     else:
-        preflight()
-        if args.email:
-            email = args.email
-            if email.endswith("@priv.email"):
-                domain = "apex"
-            elif "@v4-mail." in email:
-                domain = "v4"
-            else:
-                domain = "v3"
-            cfg = MAIL_DOMAINS[domain]
-            mail_url = (f"{cfg['worker']}/emails?address="
-                        f"{urllib.parse.quote(email)}&limit=10&include_body=true")
-            mail_token = cfg["token"]
+        if args.signup_route == "warm":
+            # ---- WARM ROUTE: sandbox-only signup, no daemon/extension -----
+            # The Node driver allocates a fresh @v3-mail.priv.email (unless
+            # --email was given), probes/rotates on captcha internally, polls
+            # the mail worker itself, and completes loginWithEmail inside one
+            # warm browser session (single residential IP).
+            creds = run_signup_warm(args.email, args.warm_country,
+                                    args.warm_attempts)
+            missing = [k for k in ("tokenV2", "userId", "deviceId")
+                       if not creds.get(k)]
+            if missing:
+                print(json.dumps(creds, indent=1)[:800])
+                sys.exit(f"warm signup did not yield {missing} — aborting")
+            email = creds.get("email") or args.email or "unknown"
+            domain = "v3"
+            log(f"warm signup complete — {email}")
+
+            session_path = args.session or os.path.join(
+                SESSIONS_DIR, re.sub(r"[^a-z0-9@._-]", "_",
+                                     email.split("@")[0]) + ".json")
+            sess = {
+                "email": email, "userId": creds["userId"],
+                "deviceId": creds["deviceId"], "tokenV2": creds["tokenV2"],
+                "clientVersion": creds.get("clientVersion")
+                or nt.CLIENT_VERSION_FALLBACK,
+                "credsSource": "zenrows-warm-session",
+                "createdAt": time.time(),
+                "space": {}, "spaces": [], "chats": [],
+            }
+            nt.save_session(session_path, sess)
+            log(f"session initialised -> {session_path}")
         else:
-            domain = args.email_domain
-            if domain == "auto":
-                idx = (st.get("lastDomainIdx", -1) + 1) % len(ROTATION)
-                domain = ROTATION[idx]
-                st["lastDomainIdx"] = idx
-            elif domain == "v4":
-                log("WARNING: v4-mail has NO catch-all — arbitrary local "
-                    "parts never receive mail; only routed addresses "
-                    "(test@/admin@) deliver. Continuing anyway.")
-            email, mail_url, mail_token, domain = allocate_email(domain)
-        log(f"allocated email: {email}  (domain: {domain})")
-
-        # ---- 1.5. pre-flight probe via Zenros (optional) ---------------
-        if args.probe_via_zenros:
-            probe_email, probe_res = probe_via_zenros(
-                email, max_retries=args.probe_retries,
-                proxy_country=args.probe_country)
-            if not probe_email:
-                sys.exit(f"probe-via-zenros: all {args.probe_retries} attempts "
-                         f"hit captcha; aborting to save code-email reputation "
-                         f"cost. Last email tried: {probe_res.get('last_email')}. "
-                         f"Re-run without --probe-via-zenros to skip the probe "
-                         f"(will then send a real code email from the extension).")
-            if probe_email != email:
-                # Rotated to a passing email on v3-mail worker subdomain
-                email = probe_email
-                cfg = MAIL_DOMAINS["v3"]
+            preflight()
+            if args.email:
+                email = args.email
+                if email.endswith("@priv.email"):
+                    domain = "apex"
+                elif "@v4-mail." in email:
+                    domain = "v4"
+                else:
+                    domain = "v3"
+                cfg = MAIL_DOMAINS[domain]
                 mail_url = (f"{cfg['worker']}/emails?address="
-                            f"{urllib.parse.quote(email, safe='@')}"
-                            f"&limit=10&include_body=true")
+                            f"{urllib.parse.quote(email)}&limit=10&include_body=true")
                 mail_token = cfg["token"]
-                domain = "v3"
-                log(f"probe passed on rotated email: {email}")
             else:
-                log(f"probe passed on first email: {email}")
+                domain = args.email_domain
+                if domain == "auto":
+                    idx = (st.get("lastDomainIdx", -1) + 1) % len(ROTATION)
+                    domain = ROTATION[idx]
+                    st["lastDomainIdx"] = idx
+                elif domain == "v4":
+                    log("WARNING: v4-mail has NO catch-all — arbitrary local "
+                        "parts never receive mail; only routed addresses "
+                        "(test@/admin@) deliver. Continuing anyway.")
+                email, mail_url, mail_token, domain = allocate_email(domain)
+            log(f"allocated email: {email}  (domain: {domain})")
 
-        # ---- 2-4. signup via extension, creds over WS -------------------
-        creds = run_signup(email, mail_url, mail_token)
-        missing = [k for k in ("tokenV2", "userId", "deviceId") if not creds.get(k)]
-        if missing:
-            print(json.dumps(creds, indent=1)[:800])
-            sys.exit(f"signup did not yield {missing} — aborting "
-                     f"(macro result above)")
-        log(f"creds over WS: tokenV2={len(creds['tokenV2'])} chars, "
-            f"userId={creds['userId'][:8]}…, isNewSignup={creds.get('isNewSignup')}")
+            # ---- 1.5. pre-flight probe via Zenros (optional) ---------------
+            if args.probe_via_zenros:
+                probe_email, probe_res = probe_via_zenros(
+                    email, max_retries=args.probe_retries,
+                    proxy_country=args.probe_country)
+                if not probe_email:
+                    sys.exit(f"probe-via-zenros: all {args.probe_retries} attempts "
+                             f"hit captcha; aborting to save code-email reputation "
+                             f"cost. Last email tried: {probe_res.get('last_email')}. "
+                             f"Re-run without --probe-via-zenros to skip the probe "
+                             f"(will then send a real code email from the extension).")
+                if probe_email != email:
+                    # Rotated to a passing email on v3-mail worker subdomain
+                    email = probe_email
+                    cfg = MAIL_DOMAINS["v3"]
+                    mail_url = (f"{cfg['worker']}/emails?address="
+                                f"{urllib.parse.quote(email, safe='@')}"
+                                f"&limit=10&include_body=true")
+                    mail_token = cfg["token"]
+                    domain = "v3"
+                    log(f"probe passed on rotated email: {email}")
+                else:
+                    log(f"probe passed on first email: {email}")
 
-        session_path = args.session or os.path.join(
-            SESSIONS_DIR, re.sub(r"[^a-z0-9@._-]", "_", email.split("@")[0])
-            + ".json")
-        sess = {
-            "email": email, "userId": creds["userId"],
-            "deviceId": creds["deviceId"], "tokenV2": creds["tokenV2"],
-            "clientVersion": creds.get("clientVersion")
-            or nt.CLIENT_VERSION_FALLBACK,
-            "credsSource": "daemon-ws", "createdAt": time.time(),
-            "space": {}, "spaces": [], "chats": [],
-        }
-        nt.save_session(session_path, sess)
-        log(f"session initialised -> {session_path}")
+            # ---- 2-4. signup via extension, creds over WS -------------------
+            creds = run_signup(email, mail_url, mail_token)
+            missing = [k for k in ("tokenV2", "userId", "deviceId") if not creds.get(k)]
+            if missing:
+                print(json.dumps(creds, indent=1)[:800])
+                sys.exit(f"signup did not yield {missing} — aborting "
+                         f"(macro result above)")
+            log(f"creds over WS: tokenV2={len(creds['tokenV2'])} chars, "
+                f"userId={creds['userId'][:8]}…, isNewSignup={creds.get('isNewSignup')}")
+
+            session_path = args.session or os.path.join(
+                SESSIONS_DIR, re.sub(r"[^a-z0-9@._-]", "_", email.split("@")[0])
+                + ".json")
+            sess = {
+                "email": email, "userId": creds["userId"],
+                "deviceId": creds["deviceId"], "tokenV2": creds["tokenV2"],
+                "clientVersion": creds.get("clientVersion")
+                or nt.CLIENT_VERSION_FALLBACK,
+                "credsSource": "daemon-ws", "createdAt": time.time(),
+                "space": {}, "spaces": [], "chats": [],
+            }
+            nt.save_session(session_path, sess)
+            log(f"session initialised -> {session_path}")
 
     # ---- 5-6. backend tail ----------------------------------------------
     log("loading notion-ref and running the backend tail "

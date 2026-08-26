@@ -218,7 +218,12 @@ personalization page as `context_page_id` on EVERY chat (HAR #55/#63/#65)
 
 **Assigning a skill page:** HAR call #54 — same `prompt` table op with
 `prompt_type: "skill"` (userAction `topbarMoreActionRegistry
-.setAsAiSkill`; different page — PostgresUniqueViolation otherwise).
+.setAsAiSkill`; **different page** — one prompt row per page: assigning a
+page that already carries the instruction prompt → HTTP 400 "Something
+went wrong" wrapping a PostgresUniqueViolation, live-reconfirmed
+2026-08-26. Recipe after `--step page --step instruct`: create a second
+page (`--step page --page-title "Agent Skill Page"`) then `--step skill` —
+`notion_tail.py` picks `pages[-1]`, so the fresh page gets the skill).
 Skills auto-surface to the agent via the Skills V2 runtime
 (`enableAgentSkillsV2: true` in the live config; the agent loads
 `modules/skills/minified/AGENTS.md`): it READS the page on demand,

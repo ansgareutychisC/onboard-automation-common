@@ -2,6 +2,12 @@
 
 **Verified live end-to-end 2026-08-25** (pure REST through the user's browser
 session; session cookies captured; zero form interaction, zero captcha).
+**2026-08-26: the same recipe now runs fully sandbox-side** via ONE warm
+Zenrows Browser Session — `scripts/notion_signup_warm.js` (all three calls
+as same-origin in-page fetches from one session-pinned residential IP,
+which satisfies Notion's csrfState IP-binding; see
+`docs/ZENROWS-EVAL.md` Addendum 3) or `backend/notion_e2e.py
+--signup-route warm` for the whole e2e.
 
 ## The endpoints (all POST, credentials: include, same-origin)
 
@@ -101,3 +107,9 @@ session cookies set on the browser.
   (19 steps, zero clicks, direct Bearer mail reads). The dry-run harness mocks
   all four endpoints
   (tests/test_macro_dryrun.js) — request-shape regressions get caught.
+- `scripts/notion_signup_warm.js` — the SAME three calls driven from the
+  sandbox inside one warm Zenrows Browser Session (Node/Playwright over
+  CDP): reads the live `Notion-Client-Version` off the page, polls v3-mail
+  itself, extracts HttpOnly cookies via CDP. Emits creds JSON for
+  `notion_tail.py --init-from-creds`. THE agent-side signup path as of
+  2026-08-26.

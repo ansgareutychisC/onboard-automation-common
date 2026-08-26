@@ -205,3 +205,117 @@ original eval, now with stronger evidence):
   (axis A/A2), fresh emails (C), region rotation (E), humanization (D).
 - `scripts/signup_matrix_results.json` — saved probe results from the
   2026-08-26 run.
+
+## Addendum 3 (2026-08-26, session 3) — Browser Sessions: the warm-instance signup, SOLVED
+
+> User question that triggered this: *"can we keep the current zenrows
+> browser instance warm, while we query the email and get the verification
+> code, hence we can keep the ip consistent?"* — **Yes. That is exactly the
+> fix.**
+
+### Zenrows Browser Sessions (CDP) — the missing product tier
+
+`wss://browser.zenrows.com?apikey=<KEY>&proxy_country=us` is a **persistent
+remote Chrome** (146.x at test time) driven over CDP
+(`playwright.chromium.connectOverCDP`). One session = **one session-pinned
+residential IP**. Works on the free/cheap plan; billed at 5 credits/min of
+session time + 25,000 credits/GB (a full signup run ≈ 10-20 credits with
+resource-blocking).
+
+**IP-stability test** (`scripts/zenrows_warm_ip_test.js`, live 2026-08-26):
+
+| Probe | Result |
+|---|---|
+| Same-origin `fetch('/cdn-cgi/trace')` ×2 (connection pool) | `178.94.226.21` both times |
+| Same probe after a **60 s idle** (simulated email-code wait) | `178.94.226.21` — unchanged |
+| New tab, navigation to an echo service | `178.94.226.21` — unchanged |
+
+The IP Notion's edge sees is **constant for the whole session lifetime** —
+across pages, in-page fetches, and idle gaps. That is precisely the property
+the csrfState IP-binding demands.
+
+### The working signup architecture (`scripts/notion_signup_warm.js`)
+
+```
+connectOverCDP (ONE residential IP for the session)
+  └─ page → app.notion.com/signup     (live Notion-Client-Version read from
+                                       data-notion-version — no more drift!)
+      ├─ fetch /api/v3/getLoginOptions        (same-origin, in-page)
+      │    └─ captcha → browser.close(), reconnect = NEW IP, fresh email,
+      │                retry (driver-internal rotation loop)
+      ├─ fetch /api/v3/sendTemporaryPassword  (same page, same IP)
+      │    └─ Node polls v3-mail worker for the code (Bearer + real UA);
+      │       in-page /cdn-cgi/trace heartbeat every ~6 s keeps the
+      │       connection pool warm + logs the exit IP
+      ├─ fetch /api/v3/loginWithEmail          (same page, same IP) ← the
+      │                                          step that 422'd before
+      └─ context.cookies() → token_v2 / notion_user_id (HttpOnly — CDP
+         sees them; plain page JS never can)
+```
+
+**Live result (2026-08-26, first attempt, 23 s end-to-end):**
+getLoginOptions PASS (no captcha) → sendcode → code email in 7 s →
+**loginWithEmail HTTP 200 `isNewSignup:true`** → token_v2 extracted →
+`notion_tail.py` tail ran clean (workspace, onboarding, biz trial, API key
+verified against the public API, models, page+instruction+skill, chat
+replied "4"). Then `notion_e2e.py --signup-route warm` ran the WHOLE e2e
+fresh: signup 18.3 s + full tail → **VERDICT: PASS, 2 workspaces**.
+
+### Plan-gated parameters & operational gotchas (all empirical)
+
+1. **`session_ttl` is plan-gated**: ANY value (60/120/180/300/600/900) →
+   `REQS004 invalid value`. Only the default TTL applies (documented 180 s).
+   The signup flow fits (~35-50 s typical; mail-wait capped at 100 s).
+2. **Session-creation cooldown**: a burst of WS connect attempts (a retry
+   storm) gets the sandbox blocked with `socket hang up` for ~4 min. Rules:
+   always `browser.close()` in `finally` (an abandoned CDP connection
+   lingers to TTL and can occupy the single concurrent-session slot), pace
+   reconnects (12-45 s), don't retry-storm.
+3. **`session_id` (Fetch API) remains plan-gated** (unchanged from
+   Addendum 2) — irrelevant now: Browser Sessions solves IP pinning
+   without it.
+4. **The Zenrows browser blocks most IP-echo services**
+   (`api.ipify.org`, `ifconfig.me`, `checkip.amazonaws.com`,
+   `icanhazip.com` → `ERR_BLOCKED_BY_ADMINISTRATOR`). Working alternatives:
+   `httpbin.org/ip`, and — best — the target site's own Cloudflare
+   `/cdn-cgi/trace` via same-origin in-page fetch (measures the exact
+   connection path + IP Notion sees).
+5. **Notion-Client-Version drift is a non-issue on this route**: read
+   `document.documentElement.getAttribute('data-notion-version')` from the
+   loaded page at run time (observed drift within hours:
+   `23.13.20260826.0028` → `…0537`).
+6. **One prompt per page** (tail gotcha, live-confirmed): assigning a page
+   as AGENT SKILL (`prompt_type=skill`) when it already carries the
+   INSTRUCTION prompt → HTTP 400 "Something went wrong". Use a fresh page
+   (`--page-id`, or run `--step page` first). `notion_tail.py` picks
+   `pages[-1]` for skill — after `page+instruct` on the same page, create
+   a second page before `--step skill`.
+7. **Trial activation route varies per call**: on the warm-e2e run, ws1's
+   `updateSubscription` succeeded DIRECT from the sandbox (first time
+   ever observed — the IP-reputation gate is evidently probabilistic /
+   stateful per account), ws2's 400'd and the auto-route fell back to
+   Zenrows as designed. Keep `--route auto`.
+
+### Verdict (final update)
+
+**Signup no longer requires the extension.** The layered answer:
+
+| Route | Signup | When to use |
+|---|---|---|
+| **warm Browser Session** (`notion_signup_warm.js` / `notion_e2e.py --signup-route warm`) | ✅ complete, sandbox-only | default for agent-side runs; ~30-50 % per-attempt captcha pass on fresh v3-mail emails, driver retries internally |
+| extension (`notion_e2e.py` default, macro `signup-rest.json`) | ✅ complete, deterministic | when the user's browser is connected; zero credits |
+| Fetch API (`notion_signup_zenrows.py`) | ❌ loginWithEmail 422 (IP rotation) | keep as probe/research tool only |
+
+The extension remains valuable (deterministic, free, real-user context),
+but the sandbox is now **self-sufficient for the entire e2e flow**: signup
+→ workspace → trial → API key → chat, no human in the loop.
+
+### Files (this addendum)
+
+- `scripts/zenrows_warm_ip_test.js` — IP-stability validation harness.
+- `scripts/zenrows_ttl_probe.js` — session_ttl plan-gating probe.
+- `scripts/notion_signup_warm.js` — the warm-session signup driver.
+- `backend/notion_e2e.py` — new `--signup-route warm` (+
+  `--warm-attempts`, `--warm-country`); also fixed `verdict()`/`report()`
+  crashing when a chat `outcome` is a dict (introduced with the
+  live-shape chat step).

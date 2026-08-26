@@ -549,14 +549,37 @@ first (eval/fetch/cookies), one command at a time, no virtual clicks unless
 captcha demands them. When a live run fails: export the capture, turn the
 interesting events into fixtures (see §1.16).
 
-### Zenrows (agent-side web access, evaluated 2026-08-25)
+### Zenrows (agent-side web access, evaluated 2026-08-25, signup SOLVED 2026-08-26)
 
-See docs/ZENROWS-EVAL.md + docs/POST-LOGIN-TAIL.md. Verdict: genuinely passes
-Notion's outer defenses via residential IP + real browser (a full signup
-email-submit completed with zero captcha once), but hCaptcha enterprise
-challenges probabilistically (1/3 passes) — not reliable enough to replace
-the extension as the SIGNUP driver, and each passed attempt sends a REAL
-code email (reputation cost).
+See docs/ZENROWS-EVAL.md (+ Addendum 3) + docs/POST-LOGIN-TAIL.md.
+
+**Signup verdict (updated 2026-08-26): SOLVED sandbox-side.** The Fetch API
+rotates the residential IP per call → Notion's csrfState IP-binding 422s
+loginWithEmail (Addendum 2), and `session_id`/`session_ttl` are plan-gated.
+The fix is **Zenrows Browser Sessions** (`wss://browser.zenrows.com?apikey=…&proxy_country=us`):
+a persistent remote Chrome over CDP (`playwright.chromium.connectOverCDP`)
+whose **session-pinned residential IP stays identical across pages,
+in-page fetches, and idle gaps** — empirically validated with
+`/cdn-cgi/trace` probes, then live-proven by `scripts/notion_signup_warm.js`
+(full signup, first attempt, 23 s) and
+`notion_e2e.py --signup-route warm` (VERDICT: PASS). Key operational rules:
+
+- always `browser.close()` in `finally`; pace reconnects — a connect
+  retry-storm trips a ~4-min cooldown (`socket hang up`), and an abandoned
+  CDP session lingers to its 180 s TTL occupying the concurrent slot;
+- read the live `Notion-Client-Version` off the loaded page
+  (`data-notion-version`) — it drifts multiple times per day;
+- the browser blocks most IP-echo services; use the target's own
+  `/cdn-cgi/trace` (same-origin fetch) or `httpbin.org/ip`;
+- do the email-code polling from Node (not in-page — CORS), with a
+  same-origin heartbeat fetch during the wait to keep the pool warm;
+- HttpOnly cookies (`token_v2`) are only extractable via CDP
+  (`context.cookies()`), never via page JS.
+
+hCaptcha still gates `getLoginOptions` probabilistically on fresh emails
+(~30-50 %/attempt with the real-browser route); the driver retries
+internally (new session = new IP + new email). The extension remains the
+deterministic, credit-free route when the user's browser is connected.
 
 **BUT post-login Zenrows is the backbone**: session replay (cookie
 forwarding via `custom_headers=true`) works for EVERY app-API call, and

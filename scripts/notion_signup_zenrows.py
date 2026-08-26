@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""Notion signup via Zenros — the agent-side signup driver.
+"""Notion signup via Zenros (Fetch API) — probe/research driver.
+
+SUPERSEDED FOR SIGNUP by scripts/notion_signup_warm.js (2026-08-26): the
+warm Zenrows Browser Session (CDP) keeps ONE residential IP across the
+whole flow and completes loginWithEmail cleanly. See
+docs/ZENROWS-EVAL.md Addendum 3. This script remains the canonical
+getLoginOptions PROBE tool (axis A/C/E in signup_matrix.py use it).
 
 LIVE FINDINGS (2026-08-26, empirically tested end-to-end):
 
