@@ -51,5 +51,20 @@ python-dev-daemon/bridge.db-journal
 backend/sessions/*
 !backend/sessions/example.json
 
+# Onboard API runtime state — the .db itself IS committed deliberately:
+# git is the durable disk (operator policy, see handoff / SKILL.md §4);
+# the DB holds the credential store that must survive sandbox recycles.
+# Transient SQLite files stay local; run `PRAGMA wal_checkpoint(TRUNCATE)`
+# before committing so onboard.db is self-contained.
+backend/api/data/*.db-wal
+backend/api/data/*.db-shm
+backend/api/data/api.log
+backend/api/data/api.pid
+backend/api/data/warm_creds_*.json
+
 # E2E rotation state (runtime)
 backend/e2e_state.json
+
+# Next.js build artifacts in web/
+web/.next/
+web/next-env.d.ts

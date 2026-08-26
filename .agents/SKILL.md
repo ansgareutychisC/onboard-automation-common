@@ -861,3 +861,152 @@ python3 python-dev-daemon/bridge.py --port 3000
   you don't.
 - **Don't re-live stabilization.** If a bug looks familiar, it's probably
   in the notion repo's commit history with a fix. Search there first.
+
+## 9. The universal playbook: crack it with a real browser, then productize headless
+(Generalized 2026-08-26 from the Notion onboarding campaign — applies to ANY
+gated web service. The Notion specifics live in the sections above + docs/.)
+
+### 9.1 The maturity ladder — and why you MUST climb it in order
+
+```
+L0  manual          human clicks the UI                     (0% reusable)
+L1  real-browser    extension drives a REAL browser on the  (100% success,
+    + extension     user's residential IP + SW fetch           0% server-side)
+L2  headless study  decode the protocol from L1 captures    (knowledge)
+L3  hybrid backend  replay via direct HTTP; route the       (90%+, server-
+    + clean relays  IP-gated mutations through relays         side, gated ops)
+L4  fully program-  one warm remote browser (or pure REST)  (100%, server-side,
+    atic            satisfies stateful IP bindings            no browser needed)
+```
+
+**The core pragma: crack first, study second, productize third.** L1 is not
+a prototype to skip — it is the ONLY route that is guaranteed to work on day
+one (a real Chrome on a residential IP with a real human's reputation is
+indistinguishable from the user). Its real value is dual:
+
+1. it delivers VALUE immediately (accounts get created while you study), and
+2. it is your instrumentation platform — every L1 run captures ground truth
+   (HAR, macro logs, response dumps) that L2 decodes at leisure.
+
+Never attempt L3/L4 blind: without L2's captured ground truth you will
+mis-guess request shapes (headers drift, hidden ops, wrapped errors) and
+burn the resource you can't recharge — IP/email reputation.
+
+**Criteria for advancing a level:** advance an OPERATION (not the whole
+service) to L3 only after you hold (a) a live captured request-response pair
+from L1, (b) a replay that reproduces it from curl/python, and (c) knowledge
+of which gate (see 9.2) protects it. Advance to L4 only when stateful IP
+binding (9.2.2) is the last blocker — that's what warm browser sessions solve.
+
+### 9.2 The anti-bot gate taxonomy (classify EVERY blocker before fighting it)
+
+1. **Server-side metadata scoring** — the decision is made at the FIRST
+   touch (e.g. a login-options probe), from request metadata: IP reputation
+   × email-newness × rate. Empirical signature: the challenge (hCaptcha etc.)
+   appears in the FIRST response, before any DOM interaction. Consequence:
+   behavioral humanization (mouse moves, typing rhythm, `js_render`
+   instructions) is USELESS — only IP/email/identity rotation changes the
+   outcome. The gate is usually PROBABILISTIC, not binary: ~30-50%/attempt
+   on fresh identities via clean residential IPs → N retry-with-rotation
+   reaches arbitrary confidence.
+2. **Stateful IP binding** — multi-step auth flows bind intermediate state
+   (csrfState/nonce) to the IP that CREATED it; submitting from a different
+   IP → 422. Signature: every step succeeds in isolation but the final
+   submit fails from rotating-IP relays. Fix: ONE stable IP across the
+   whole flow — either a real browser (L1) or a session-pinned remote
+   browser (L4). Per-call-rotating premium proxies are structurally WRONG
+   for these flows.
+3. **Plan-gated vendor params** — proxy/scraping vendors gate advanced
+   features (IP pinning like `session_id`, long TTLs) behind paid tiers;
+   lower tiers return empty replies / connection drops instead of errors.
+   Signature: "Empty reply from server" on a parameter the docs say exists.
+   Fix: don't fight the plan — find the feature that IS included (e.g.
+   Browser Sessions on the free tier) or restructure the flow so the
+   un-gated feature suffices.
+4. **Rate/cooldown economics** — both the target (per-IP + per-email
+   rate limits, 429s that tighten within minutes) and your vendor
+   (session-creation storms → ~4-min cooldowns; abandoned sessions linger
+   until TTL expiry occupying the concurrency slot). Fix: pace everything;
+   sleep between resource-creating mutations (15 s between trial-style
+   activations, 45-60 s between account signups, 12-15 s between proxy
+   reconnects); ALWAYS release resources in `finally`.
+5. **TLS/JA3 + fingerprint variance** — headless-default TLS stacks and
+   UA/header orders are detectable. Cheap mitigations: let a real Chrome
+   engine do the talking (CDP remote browsers), or rely on vendors that
+   terminate TLS themselves (their JA3 is their own reputation problem).
+   Isolating JA3 as a variable is hard; treat it as background noise and
+   fix 9.2.1-9.2.4 first — in practice they dominate.
+
+### 9.3 The transport toolbox — pick per operation class, not per service
+
+| Transport | IP story | Best for | Structural weakness |
+|---|---|---|---|
+| Extension on user's browser (SW fetch) | user's residential IP, deterministic | L1 cracking; flows with 9.2.2 binding; credit-free | requires user's machine online |
+| Vendor Fetch API (Zenrows &co) | rotates residential IP PER CALL | single-shot mutations gated by 9.2.1 (trial activation, one-off writes) | per-call rotation BREAKS 9.2.2 flows |
+| Vendor Browser Session (CDP `wss://`) | ONE session-pinned residential IP (stable across pages/in-page fetches/idle) | L4 whole-auth flows (signup/login with email codes); OTP waits | single concurrent slot on cheap tiers; 180 s default TTL; connect-storm cooldowns |
+| Edge functions (supabase/netlify) | 1000s of cloud IPs, region-pinnable | region-axis experiments; reaching vendor-blocked hosts; NOT a Cloudflare-WAF bypass (cloud ASN) | cloud ASN reputation; changes hop-1 only |
+
+Empirical vendor rules that transfer (Zenrows-specifics in §Zenrows):
+- `custom_headers` became a BOOLEAN — headers ride the vendor request;
+  `Accept-Encoding: identity` is MANDATORY or you get gzip garbage at 200.
+- Vendor error codes masquerade as target errors (`RESP001` "premium
+  proxies" looks like the target's 400 validation error) — wrap calls,
+  detect vendor-error signatures, retry 4× with backoff BEFORE concluding
+  the target rejected you.
+- Vendors block some hosts outright (REQS001) — never route your IP-echo
+  or metadata calls through them; test vendor liveness with the actual
+  target host.
+- Remote browsers block most IP-echo sites by policy — echo via the
+  TARGET's own same-origin endpoints (`/cdn-cgi/trace` on any Cloudflare
+  site) — this is also the exact exit IP the target sees: ground truth.
+- Billing: browser sessions bill per-minute + per-GB — block images/fonts/
+  stylesheets/media via routing; a whole signup fits in ~10-20 credits.
+
+### 9.4 OTP/email infrastructure (the hidden single point of failure)
+
+- Prefer a domain YOU control with a worker-backed catch-all subdomain:
+  unlimited fresh addresses (fresh = new identity to 9.2.1 scoring) with
+  programmatic read access. Beware MX topology: an apex-domain catch-all
+  may forward elsewhere and BYPASS your worker — only the worker subdomain
+  gives you API-readable mail for arbitrary locals; named aliases may
+  dual-deliver. Know which form the worker stores (`to_address`).
+- Poll for codes from the DRIVER process (Node/python), never from inside
+  the page (CORS + it dies with the page). Baseline the mailbox id BEFORE
+  triggering the send (avoid picking up stale codes), then poll every ~5 s.
+- Code formats differ per flow on the SAME service (mixed-case for login,
+  digits-only for signup) — match `[A-Za-z0-9]{4,10}` on the FIRST LINE of
+  the text body, filter by sender+subject keywords, and don't over-fit.
+- During the mail wait the remote browser must stay warm: same-origin
+  heartbeat fetch every ~20 s (keeps the connection pool alive AND logs
+  the exit IP so any mid-flow rotation becomes visible).
+
+### 9.5 IP hygiene doctrine (do this from day one, future-you will thank you)
+
+- **Log the exit IP for every identity-creating mutation** (signup, login,
+  trial activation) — read it from the target's own echo endpoint at the
+  moment of the mutation, and persist IP + region/country + transport +
+  timestamp next to the created account. Even if the current target
+  tolerates IP reuse, the NEXT one won't; retro-fitting is impossible.
+- One signup = one IP = one identity. Track accounts-per-IP so you can
+  spread future signups across regions (`proxy_country` rotation) and
+  avoid stacking burnable identities on one address.
+- Region pinning is a first-class axis: the same vendor key exits through
+  different countries per session; store the country WITH the account.
+- Treat IPs as consumables with reputation half-lives; when a combo starts
+  failing, rotate (new session/new country) rather than retry the same IP.
+
+### 9.6 Decision tree — given an operation on a gated service
+
+1. Does a real-browser L1 driver exist? → USE IT, capture traffic while
+   it runs, ship value today. Keep it as the deterministic fallback forever.
+2. Single-shot mutation, no cross-request state? → L3 direct HTTP;
+   if 9.2.1-gated, relay through a per-call-rotating premium proxy.
+3. Multi-step auth with cross-request state (csrf/nonce)? → needs ONE IP:
+   L4 warm remote browser session (CDP), all steps as same-origin in-page
+   fetches, code polling + heartbeats from the driver process.
+4. Read-only scraping / config refresh? → cheapest transport that returns
+   200; never burn residential credits on reads a datacenter IP can do.
+5. Vendor plan blocks the parameter you need (9.2.3)? → restructure around
+   the included feature set (Browser Sessions instead of session-pinned
+   Fetch) — don't pay-up mid-campaign, and don't code against undocumented
+   plan behavior.
