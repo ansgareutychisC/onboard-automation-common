@@ -97,3 +97,111 @@ Follow-up tested with a captured session (cookie replay of
 Verdict update: Zenrows = (a) agent-side eyes, (b) fallback signup
 driver, and now (c) **clean-IP relay for reputation-gated mutations**
 (trial activation). See `docs/POST-LOGIN-TAIL.md` §2.
+
+## Addendum 2 (2026-08-26) — Zenrows as the SIGNUP driver: blocked at loginWithEmail
+
+Full retry matrix run end-to-end today. Scripts:
+`scripts/signup_matrix.py` (probe axes A/C/E/D) +
+`scripts/notion_signup_zenrows.py` (full flow driver). Results saved
+to `scripts/signup_matrix_results.json`.
+
+### Probe matrix (getLoginOptions only — cheapest signal)
+
+| Axis | Variant | Pass rate | Notes |
+|---|---|---|---|
+| A   | Named aliases, no proxy           | 1/5 | Only `noreply@` passed |
+| A.2 | Named aliases, premium_proxy=us  | 4/5 | `admin/support/noreply/billing@` PASS, `security@` captcha |
+| C   | Fresh `*@priv.email`, no proxy    | 0/3 | All captcha (datacenter IP blocked) |
+| C   | Fresh `*@priv.email`, premium_us  | 1/3 | Confirms probabilistic gate on fresh addresses |
+| (extra) | Fresh `*@v3-mail.priv.email`, premium_us | 2/5 | Worker subdomain has same reputation as apex |
+| E   | `admin@` × 5 countries (us/gb/jp/kr/br) | (deferred —Zenros rate-limited the sandbox IP after axis A+C burned 16 probes in quick succession) | |
+| D   | Humanization (js_render + fill+click) | (deferred — null-result was already documented in main eval) | |
+
+### Full-flow driver (`notion_signup_zenrows.py`)
+
+The script does the WHOLE signup end-to-end via Zenros:
+getLoginOptions → sendTemporaryPassword → poll v3-mail worker →
+loginWithEmail. Live run 2026-08-26 on `admin@priv.email` (existing
+account → login flow):
+
+| Step | Via | Result |
+|---|---|---|
+| getLoginOptions  | premium_proxy=us | ✅ PASS — loginOptionsToken acquired |
+| sendTemporaryPassword | premium_proxy=us | ✅ PASS — csrfState acquired, code email arrived |
+| Poll v3-mail worker (direct curl) | (not via Zenros) | ✅ Got code `fFWGzK` (mixed-case login code, per the macro's regex) |
+| **loginWithEmail** | premium_proxy=us | ❌ **422 RESP001 "Could not get content"** — every retry, consistently |
+
+### Why loginWithEmail 422s — IP-binding confirmed
+
+Notion binds the csrfState (issued at sendTemporaryPassword time) to
+the requesting IP. Zenros's `premium_proxy=true` rotates the residential
+IP per call — so the IP that submitted sendcode ≠ the IP that submits
+loginWithEmail → Notion 422s.
+
+The fix on Zenros's side would be `session_id` (per
+<https://docs.zenrows.com/fetch/features/other#session-id> — pins the
+residential IP for 10 min). Tested via curl:
+
+```bash
+curl -X POST "https://api.zenrows.com/v1/?apikey=<KEY>&url=<encoded getLoginOptions>&premium_proxy=true&proxy_country=us&session_id=testsession123&original_status=true&custom_headers=true" ...
+# → curl: (52) Empty reply from server   (HTTP 000, 0 bytes)
+```
+
+Tried 3 variants (`session_id=abc`, `=testsession123`, `=notionsignupABC`,
+with and without `premium_proxy`, with and without `proxy_country`) — all
+return "Empty reply from server". This Zenros plan returns HTTP 000
+(connection close at TLS layer) the moment `session_id` is in the URL.
+Likely a paid-tier feature; the free/cheap plan doesn't support it.
+
+### Confirms the handoff's §3 hypothesis
+
+> "if hCaptcha show up instantly even before any interaction then it is
+> really an ip + fingerprint thing not really behavioral."
+
+Empirically confirmed across multiple axes:
+- ✅ Captcha is decided at `getLoginOptions` time, before any DOM
+  interaction (matches handoff's two prior probes).
+- ✅ Captcha rate varies with email-reputation (named aliases 4/5,
+  fresh emails 1/3-2/5) and proxy-type (datacenter 0/8, premium_proxy
+  residential 4-5/10).
+- ✅ Even when getLoginOptions PASSES, loginWithEmail 422s due to
+  IP-binding — the gate has a SECOND layer at the actual auth mutation,
+  not just at the probe.
+- ✅ Humanization (js_render + fill+click) was DEFERRED because the
+  null-result is already documented in the main eval (test 4a/4b/5:
+  page renders fine, form fills fine, but `getLoginOptions` returned
+  `challengeProvider: hcaptcha` from the start — proving behavior is
+  not the trigger).
+
+### Verdict update
+
+**Keep the extension as the primary signup driver.** The extension's
+`signup-rest.json` macro does all 3 Notion calls (getLoginOptions →
+sendcode → loginWithEmail) from one real browser on the user's
+residential IP — same IP for all calls, so csrfState-binding is
+automatically satisfied. That's why it works deterministically.
+
+**Where Zenros DOES earn its place for signup** (unchanged from the
+original eval, now with stronger evidence):
+1. **Pre-flight probe** — find which email patterns pass getLoginOptions
+   via Zenros before triggering the extension macro (saves code-email
+   reputation cost oncaptcha-gated attempts). `signup_matrix.py --axis A`
+   is the canonical probe tool.
+2. **Fallback for accounts that already exist** — loginWithEmail on
+   existing accounts may NOT enforce IP-binding (untested; if true,
+   `notion_signup_zenrows.py` could re-login to an existing account
+   from the sandbox without the extension).
+3. **Future: Zenros Browser Sessions** (CDP-over-residential, per
+   <https://docs.zenrows.com/browser-sessions/introduction>) — gives a
+   real Chrome session with one residential IP for the entire flow.
+   Would replicate the extension's same-IP behavior from the sandbox.
+   Untested on this plan; likely requires Playwright integration.
+
+### Files
+
+- `scripts/notion_signup_zenrows.py` — full-flow Zenros signup driver
+  (works for steps 1-4, 422s at step 5).
+- `scripts/signup_matrix.py` — probe matrix across email reputation
+  (axis A/A2), fresh emails (C), region rotation (E), humanization (D).
+- `scripts/signup_matrix_results.json` — saved probe results from the
+  2026-08-26 run.

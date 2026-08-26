@@ -1,0 +1,121 @@
+[
+  {
+    "axis": "C",
+    "variant": "no_proxy",
+    "email": "matrix-c-1787718912-0@priv.email",
+    "status": 200,
+    "verdict": "CAPTCHA(hcaptcha)",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": "hcaptcha",
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken",
+        "challengeProvider"
+      ]
+    }
+  },
+  {
+    "axis": "C",
+    "variant": "premium_us",
+    "email": "matrix-c-1787718912-0@priv.email",
+    "status": 200,
+    "verdict": "CAPTCHA(hcaptcha)",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": "hcaptcha",
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken",
+        "challengeProvider"
+      ]
+    }
+  },
+  {
+    "axis": "C",
+    "variant": "no_proxy",
+    "email": "matrix-c-1787718922-1@priv.email",
+    "status": 200,
+    "verdict": "CAPTCHA(hcaptcha)",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": "hcaptcha",
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken",
+        "challengeProvider"
+      ]
+    }
+  },
+  {
+    "axis": "C",
+    "variant": "premium_us",
+    "email": "matrix-c-1787718922-1@priv.email",
+    "status": 200,
+    "verdict": "PASS",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": null,
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken"
+      ]
+    }
+  },
+  {
+    "axis": "C",
+    "variant": "no_proxy",
+    "email": "matrix-c-1787718932-2@priv.email",
+    "status": 200,
+    "verdict": "CAPTCHA(hcaptcha)",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": "hcaptcha",
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken",
+        "challengeProvider"
+      ]
+    }
+  },
+  {
+    "axis": "C",
+    "variant": "premium_us",
+    "email": "matrix-c-1787718932-2@priv.email",
+    "status": 200,
+    "verdict": "CAPTCHA(hcaptcha)",
+    "parsed": {
+      "hasAccount": true,
+      "challengeProvider": "hcaptcha",
+      "loginOptionsToken": true,
+      "raw_keys": [
+        "hasAccount",
+        "samlSignIn",
+        "passwordSignIn",
+        "mustReverify",
+        "loginOptionsToken",
+        "challengeProvider"
+      ]
+    }
+  }
+]
